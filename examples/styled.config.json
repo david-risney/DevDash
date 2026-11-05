@@ -1,0 +1,46 @@
+{
+  "$schema": "../config.schema.json",
+  "version": 1,
+  "presentation": {
+    "ansi": {
+      "palette": { "fileHeader": "#34465b" },
+      "table": { "header": { "background": "p:fileHeader" } }
+    }
+  },
+  "profiles": {
+    "work": {
+      "refreshSeconds": 300,
+      "presentation": {
+        "ansi": {
+          "palette": { "groupHeader": "#3f435e" },
+          "table": { "header": { "background": "p:groupHeader" } }
+        }
+      },
+      "queries": {
+        "bugs": {
+          "provider": "github",
+          "resource": "bugs",
+          "repository": "example/repo",
+          "query": "is:open label:bug"
+        },
+        "priority-bugs": {
+          "provider": "github",
+          "resource": "bugs",
+          "repository": "example/repo",
+          "query": "is:open label:priority",
+          "presentation": {
+            "ansi": {
+              "palette": { "queryHeader": "#573648" },
+              "table": {
+                "header": { "background": "p:queryHeader" },
+                "columns": { "title": { "bold": true } }
+              }
+            },
+            "ascii": { "links": false },
+            "md": { "headingLevel": 3 }
+          }
+        }
+      }
+    }
+  }
+}

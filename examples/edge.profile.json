@@ -1,0 +1,37 @@
+{
+  "refreshSeconds": 300,
+  "queries": {
+    "bugs": {
+      "provider": "ado",
+      "resource": "bugs",
+      "organization": "https://dev.azure.com/YOUR-ORG",
+      "project": "YOUR-PROJECT",
+      "query": { "queryId": "01234567-89ab-4def-8123-456789abcdef" }
+    },
+    "security-bugs": {
+      "provider": "ado",
+      "resource": "bugs",
+      "organization": "https://dev.azure.com/YOUR-ORG",
+      "project": "YOUR-PROJECT",
+      "query": { "queryId": "12345678-9abc-4def-8123-456789abcdef" }
+    },
+    "my-prs": {
+      "provider": "ado",
+      "resource": "prs",
+      "organization": "https://dev.azure.com/YOUR-ORG",
+      "project": "YOUR-PROJECT",
+      "repository": "YOUR-REPOSITORY",
+      "query": { "author": "you@example.com" },
+      "refreshSeconds": 120
+    },
+    "review-prs": {
+      "provider": "ado",
+      "resource": "prs",
+      "organization": "https://dev.azure.com/YOUR-ORG",
+      "project": "YOUR-PROJECT",
+      "repository": "YOUR-REPOSITORY",
+      "query": { "reviewer": "you@example.com" },
+      "refreshSeconds": 120
+    }
+  }
+}

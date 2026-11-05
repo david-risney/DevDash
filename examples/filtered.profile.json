@@ -1,0 +1,34 @@
+{
+  "refreshSeconds": 300,
+  "queries": {
+    "ado-prs": {
+      "provider": "ado",
+      "resource": "prs",
+      "organization": "https://dev.azure.com/YOUR-ORG",
+      "project": "YOUR-PROJECT",
+      "repository": "YOUR-REPOSITORY",
+      "query": {
+        "author": "you@example.com",
+        "targetBranch": "main",
+        "status": "active"
+      },
+      "filter": "title:\"memory leak\" draft:false",
+      "refreshSeconds": 120
+    },
+    "github-bugs": {
+      "provider": "github",
+      "resource": "bugs",
+      "repository": "david-risney/DevDash",
+      "query": "is:open label:bug",
+      "filter": "title:cache labels:regression"
+    },
+    "chromium-cls": {
+      "provider": "chromium",
+      "resource": "cls",
+      "project": "chromium/src",
+      "query": "status:open owner:you@example.com",
+      "filter": "subject:\"memory leak\" branch:main",
+      "refreshSeconds": 120
+    }
+  }
+}

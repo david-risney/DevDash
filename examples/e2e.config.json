@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "profiles": {
+    "github": {
+      "refreshSeconds": 300,
+      "queries": {
+        "bugs": {
+          "provider": "github",
+          "resource": "bugs",
+          "repository": "david-risney/DevDash",
+          "query": "is:open",
+          "limit": 2
+        },
+        "prs": {
+          "provider": "github",
+          "resource": "prs",
+          "repository": "david-risney/DevDash",
+          "query": "is:open author:@me",
+          "filter": "state:open",
+          "limit": 2
+        }
+      }
+    },
+    "ado": {
+      "refreshSeconds": 300,
+      "queries": {
+        "bugs": {
+          "provider": "ado",
+          "resource": "bugs",
+          "organization": "https://dev.azure.com/YOUR-ORG",
+          "project": "YOUR-PROJECT",
+          "query": {
+            "wiql": "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project AND [System.WorkItemType] = 'Bug'"
+          },
+          "limit": 2
+        },
+        "prs": {
+          "provider": "ado",
+          "resource": "prs",
+          "organization": "https://dev.azure.com/YOUR-ORG",
+          "project": "YOUR-PROJECT",
+          "repository": "YOUR-REPOSITORY",
+          "query": { "status": "active" },
+          "limit": 2
+        }
+      }
+    },
+    "chromium": {
+      "refreshSeconds": 900,
+      "queries": {
+        "bugs": {
+          "provider": "chromium",
+          "resource": "bugs",
+          "query": { "bugIds": ["411731002"] },
+          "limit": 1
+        },
+        "bug-search": {
+          "provider": "chromium",
+          "resource": "bugs",
+          "query": "type:bug status:open",
+          "filter": "type:bug",
+          "limit": 2
+        },
+        "cls": {
+          "provider": "chromium",
+          "resource": "cls",
+          "project": "chromium/src",
+          "query": "status:merged",
+          "filter": "state:merged",
+          "limit": 2
+        }
+      }
+    }
+  }
+}

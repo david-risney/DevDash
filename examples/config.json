@@ -1,0 +1,110 @@
+{
+  "$schema": "../config.schema.json",
+  "version": 1,
+  "profiles": {
+    "edge": {
+      "refreshSeconds": 300,
+      "queries": {
+        "bugs": {
+          "provider": "ado",
+          "resource": "bugs",
+          "organization": "https://dev.azure.com/YOUR-ORG",
+          "project": "YOUR-PROJECT",
+          "query": { "queryId": "01234567-89ab-4def-8123-456789abcdef" }
+        },
+        "security-bugs": {
+          "provider": "ado",
+          "resource": "bugs",
+          "organization": "https://dev.azure.com/YOUR-ORG",
+          "project": "YOUR-PROJECT",
+          "query": { "queryId": "12345678-9abc-4def-8123-456789abcdef" }
+        },
+        "my-prs": {
+          "provider": "ado",
+          "resource": "prs",
+          "organization": "https://dev.azure.com/YOUR-ORG",
+          "project": "YOUR-PROJECT",
+          "repository": "YOUR-REPOSITORY",
+          "query": { "author": "you@example.com" },
+          "refreshSeconds": 120
+        },
+        "review-prs": {
+          "provider": "ado",
+          "resource": "prs",
+          "organization": "https://dev.azure.com/YOUR-ORG",
+          "project": "YOUR-PROJECT",
+          "repository": "YOUR-REPOSITORY",
+          "query": { "reviewer": "you@example.com" },
+          "refreshSeconds": 120
+        }
+      }
+    },
+    "github-bugs": {
+      "provider": "github",
+      "resource": "bugs",
+      "repository": "david-risney/DevDash",
+      "query": "is:open label:bug",
+      "refreshSeconds": 300,
+      "limit": 100
+    },
+    "github-prs": {
+      "provider": "github",
+      "resource": "prs",
+      "repository": "david-risney/DevDash",
+      "query": "is:open author:@me",
+      "refreshSeconds": 120,
+      "limit": 100
+    },
+    "ado-bugs": {
+      "provider": "ado",
+      "resource": "bugs",
+      "organization": "https://dev.azure.com/YOUR-ORG",
+      "project": "YOUR-PROJECT",
+      "query": { "wiql": "SELECT [System.Id], [System.Title], [System.State] FROM WorkItems WHERE [System.TeamProject] = @project AND [System.WorkItemType] = 'Bug' AND [System.AssignedTo] = @me AND [System.State] <> 'Closed' ORDER BY [System.ChangedDate] DESC" },
+      "refreshSeconds": 300,
+      "limit": 100
+    },
+    "ado-saved-query": {
+      "provider": "ado",
+      "resource": "bugs",
+      "organization": "https://dev.azure.com/YOUR-ORG",
+      "project": "YOUR-PROJECT",
+      "query": { "queryId": "00000000-0000-0000-0000-000000000000" },
+      "refreshSeconds": 300,
+      "limit": 100
+    },
+    "ado-prs": {
+      "provider": "ado",
+      "resource": "prs",
+      "organization": "https://dev.azure.com/YOUR-ORG",
+      "project": "YOUR-PROJECT",
+      "repository": "YOUR-REPOSITORY",
+      "query": { "status": "active", "author": "you@example.com" },
+      "refreshSeconds": 120,
+      "limit": 100
+    },
+    "chromium-bugs": {
+      "provider": "chromium",
+      "resource": "bugs",
+      "query": { "bugIds": ["411731002"] },
+      "refreshSeconds": 900,
+      "limit": 10
+    },
+    "chromium-cls": {
+      "provider": "chromium",
+      "resource": "cls",
+      "host": "https://chromium-review.googlesource.com",
+      "project": "chromium/src",
+      "query": "status:open owner:you@example.com",
+      "refreshSeconds": 120,
+      "limit": 100
+    },
+    "chromium-bug-search": {
+      "provider": "chromium",
+      "resource": "bugs",
+      "query": "type:bug status:open",
+      "refreshSeconds": 900,
+      "limit": 10
+    }
+  }
+}

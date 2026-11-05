@@ -1,0 +1,8 @@
+{
+  "provider": "github",
+  "resource": "prs",
+  "repository": "david-risney/DevDash",
+  "query": "is:open author:@me",
+  "refreshSeconds": 120,
+  "limit": 100
+}

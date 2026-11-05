@@ -147,3 +147,14 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# Local provider configuration, authentication, and live-test data
+.npmrc
+.devdash/
+.cr/
+devdash.e2e.local.json
+*.e2e.local.json
+auth-state/
+playwright/.auth/
+playwright-report/
+test-results/

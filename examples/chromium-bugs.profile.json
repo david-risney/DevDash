@@ -1,0 +1,7 @@
+{
+  "provider": "chromium",
+  "resource": "bugs",
+  "query": { "bugIds": ["411731002"] },
+  "refreshSeconds": 900,
+  "limit": 10
+}

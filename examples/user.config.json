@@ -1,0 +1,39 @@
+{
+  "$schema": "../presentation.schema.json",
+  "version": 1,
+  "presentation": {
+    "ansi": {
+      "palette": {
+        "header": "#2e4052",
+        "row": "#1f2933",
+        "alternate": "#27333f",
+        "text": "#e0e8f0",
+        "accent": "#bee6f9",
+        "priority": "#f3a5cf"
+      },
+      "table": {
+        "cornerStyle": "half",
+        "padding": 1,
+        "gap": 2,
+        "separator": "",
+        "border": {
+          "colorSource": "header",
+          "left": "\u2590",
+          "right": "\u258c",
+          "bottom": { "left": "\u259d", "fill": "\u2580", "right": "\u2598" }
+        },
+        "header": { "background": "p:header", "foreground": "p:accent", "bold": true },
+        "rows": [
+          { "background": "p:row", "foreground": "p:text" },
+          { "background": "p:alternate", "foreground": "p:text" }
+        ],
+        "columns": {
+          "item": { "foreground": "p:accent", "bold": true },
+          "priority": { "foreground": "p:priority", "bold": true }
+        }
+      }
+    },
+    "ascii": { "links": true, "table": { "separator": " | ", "junction": "-+-" } },
+    "md": { "headingLevel": 2, "table": { "align": { "priority": "center", "severity": "center" } } }
+  }
+}

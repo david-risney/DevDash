@@ -1,0 +1,196 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/david-risney/DevDash/config.schema.json",
+  "title": "DevDash configuration",
+  "type": "object",
+  "required": ["version", "profiles"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": { "const": 1 },
+    "presentation": { "$ref": "presentation.schema.json#/definitions/presentation" },
+    "profiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$": { "$ref": "#/definitions/profile" }
+      }
+    }
+  },
+  "definitions": {
+    "text": { "type": "string", "minLength": 1, "maxLength": 32768 },
+    "refreshSeconds": { "type": "integer", "minimum": 1, "maximum": 31536000 },
+    "limit": { "type": "integer", "minimum": 1, "maximum": 20000 },
+    "filter": { "type": "string", "maxLength": 32768 },
+    "bugIds": {
+      "type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" }
+    },
+    "queryId": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "adoBugQuery": {
+      "type": "object", "additionalProperties": false,
+      "properties": { "wiql": { "$ref": "#/definitions/text" }, "queryId": { "$ref": "#/definitions/queryId" } },
+      "oneOf": [
+        { "required": ["wiql"], "not": { "required": ["queryId"] } },
+        { "required": ["queryId"], "not": { "required": ["wiql"] } }
+      ]
+    },
+    "adoPrQuery": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "author": { "$ref": "#/definitions/text" },
+        "reviewer": { "$ref": "#/definitions/text" },
+        "status": { "enum": ["active", "completed", "abandoned", "all"] },
+        "sourceBranch": { "$ref": "#/definitions/text" },
+        "targetBranch": { "$ref": "#/definitions/text" }
+      }
+    },
+    "chromiumBugQuery": {
+      "type": "object", "required": ["bugIds"], "additionalProperties": false,
+      "properties": { "bugIds": { "$ref": "#/definitions/bugIds" } }
+    },
+    "profile": {
+      "oneOf": [
+        {
+          "allOf": [
+            { "$ref": "#/definitions/query" },
+            { "required": ["refreshSeconds"] }
+          ]
+        },
+        {
+          "type": "object",
+          "required": ["refreshSeconds", "queries"],
+          "additionalProperties": false,
+          "properties": {
+            "refreshSeconds": { "$ref": "#/definitions/refreshSeconds" },
+            "presentation": { "$ref": "presentation.schema.json#/definitions/presentation" },
+            "queries": {
+              "type": "object",
+              "minProperties": 1,
+              "maxProperties": 100,
+              "additionalProperties": false,
+              "patternProperties": {
+                "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$": { "$ref": "#/definitions/query" }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "query": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["provider", "resource", "repository"],
+          "additionalProperties": false,
+          "properties": {
+            "provider": { "const": "github" },
+            "presentation": { "$ref": "presentation.schema.json#/definitions/presentation" },
+            "resource": { "enum": ["bugs", "prs"] },
+            "repository": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+            "hostname": { "type": "string", "pattern": "^[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*$" },
+            "query": { "$ref": "#/definitions/text" },
+            "filter": { "$ref": "#/definitions/filter" },
+            "refreshSeconds": { "$ref": "#/definitions/refreshSeconds" },
+            "limit": { "$ref": "#/definitions/limit" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["provider", "resource", "organization", "project"],
+          "additionalProperties": false,
+          "properties": {
+            "provider": { "const": "ado" },
+            "presentation": { "$ref": "presentation.schema.json#/definitions/presentation" },
+            "resource": { "enum": ["bugs", "prs"] },
+            "organization": { "$ref": "#/definitions/text" },
+            "project": { "$ref": "#/definitions/text" },
+            "repository": { "$ref": "#/definitions/text" },
+            "query": {
+              "oneOf": [
+                { "$ref": "#/definitions/text" },
+                { "$ref": "#/definitions/adoBugQuery" },
+                { "$ref": "#/definitions/adoPrQuery" }
+              ]
+            },
+            "filter": { "$ref": "#/definitions/filter" },
+            "queryId": { "$ref": "#/definitions/queryId" },
+            "status": { "enum": ["active", "completed", "abandoned", "all"] },
+            "creator": { "$ref": "#/definitions/text" },
+            "reviewer": { "$ref": "#/definitions/text" },
+            "refreshSeconds": { "$ref": "#/definitions/refreshSeconds" },
+            "limit": { "$ref": "#/definitions/limit" }
+          },
+          "allOf": [
+            {
+              "if": { "properties": { "resource": { "const": "bugs" } } },
+              "then": {
+                "properties": {
+                  "query": { "oneOf": [{ "$ref": "#/definitions/text" }, { "$ref": "#/definitions/adoBugQuery" }] }
+                },
+                "oneOf": [
+                  { "required": ["query"], "not": { "required": ["queryId"] } },
+                  { "required": ["queryId"], "not": { "required": ["query"] } }
+                ],
+                "not": {
+                  "anyOf": [
+                    { "required": ["repository"] },
+                    { "required": ["status"] },
+                    { "required": ["creator"] },
+                    { "required": ["reviewer"] }
+                  ]
+                }
+              },
+              "else": {
+                "properties": { "query": { "$ref": "#/definitions/adoPrQuery" } },
+                "not": { "required": ["queryId"] },
+                "if": { "required": ["query"] },
+                "then": {
+                  "not": { "anyOf": [{ "required": ["creator"] }, { "required": ["reviewer"] }, { "required": ["status"] }] }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "object",
+          "required": ["provider", "resource"],
+          "additionalProperties": false,
+          "properties": {
+            "provider": { "const": "chromium" },
+            "presentation": { "$ref": "presentation.schema.json#/definitions/presentation" },
+            "resource": { "const": "bugs" },
+            "bugIds": { "$ref": "#/definitions/bugIds" },
+            "query": { "oneOf": [{ "$ref": "#/definitions/text" }, { "$ref": "#/definitions/chromiumBugQuery" }] },
+            "filter": { "$ref": "#/definitions/filter" },
+            "refreshSeconds": { "$ref": "#/definitions/refreshSeconds" },
+            "limit": { "$ref": "#/definitions/limit" }
+          },
+          "oneOf": [
+            { "required": ["bugIds"], "not": { "required": ["query"] } },
+            { "required": ["query"], "not": { "required": ["bugIds"] } }
+          ]
+        },
+        {
+          "type": "object",
+          "required": ["provider", "resource", "query"],
+          "additionalProperties": false,
+          "properties": {
+            "provider": { "const": "chromium" },
+            "presentation": { "$ref": "presentation.schema.json#/definitions/presentation" },
+            "resource": { "const": "cls" },
+            "host": { "$ref": "#/definitions/text" },
+            "project": { "$ref": "#/definitions/text" },
+            "query": { "$ref": "#/definitions/text" },
+            "filter": { "$ref": "#/definitions/filter" },
+            "refreshSeconds": { "$ref": "#/definitions/refreshSeconds" },
+            "limit": { "$ref": "#/definitions/limit" }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "@devdash/cr",
+  "version": "0.1.0",
+  "description": "Standalone JSON-first anonymous Chromium bugs and Gerrit CLI.",
+  "type": "module",
+  "bin": { "cr": "bin/cr.js" },
+  "engines": { "node": ">=22" },
+  "scripts": { "test": "node --test" },
+  "dependencies": { "playwright": "^1.58.2", "proper-lockfile": "^4.1.2" },
+  "files": ["bin", "src", "README.md", "LICENSE"],
+  "license": "MIT"
+}

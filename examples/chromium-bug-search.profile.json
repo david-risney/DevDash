@@ -1,0 +1,7 @@
+{
+  "provider": "chromium",
+  "resource": "bugs",
+  "query": "type:bug status:open",
+  "refreshSeconds": 900,
+  "limit": 10
+}

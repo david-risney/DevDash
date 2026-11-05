@@ -1,0 +1,45 @@
+{
+  "name": "devdash",
+  "version": "0.1.0",
+  "description": "JSON-first developer query profiles and cache for GitHub, Azure DevOps, and Chromium.",
+  "type": "module",
+  "bin": {
+    "devdash": "bin/devdash.js",
+    "devdash-native": "bin/devdash-native.js"
+  },
+  "exports": {
+    ".": "./src/service.js",
+    "./providers": "./src/providers.js",
+    "./filters": "./src/filters.js"
+  },
+  "workspaces": ["packages/cr"],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test",
+    "test:e2e": "node scripts/run-e2e.js",
+    "test:providers": "node --test test/providers.test.js test/process.test.js packages/cr/test/gerrit.test.js packages/cr/test/bugs.test.js packages/cr/test/bug-search.test.js",
+    "check:public": "node scripts/check-public.js",
+    "check": "node --check bin/devdash.js && node --test",
+    "coverage": "node --test --experimental-test-coverage"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "proper-lockfile": "^4.1.2"
+  },
+  "files": [
+    "bin",
+    "src",
+    "config.schema.json",
+    "presentation.schema.json",
+    "examples",
+    "README.md",
+    "LICENSE"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/david-risney/DevDash.git"
+  }
+}
