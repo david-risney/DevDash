@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,7 +22,7 @@ function run(script, args, { cwd, env = process.env, input = '' } = {}) {
 }
 
 async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), 'devdash pwsh '));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'devdash pwsh ')));
   t.after(() => rm(root, { recursive: true, force: true }));
   for (const directory of ['bin', 'packages/cr', 'node_modules/.bin', 'tools', 'caller']) {
     await mkdir(join(root, directory), { recursive: true });

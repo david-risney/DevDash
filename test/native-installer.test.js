@@ -5,7 +5,7 @@ import { promisify } from 'node:util';
 import { mkdtemp, mkdir, writeFile, readFile, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { launcherOptions, missingDependencies, prepareDependencies } from '../bin/devdash-native.js';
+import { findNpm, launcherOptions, missingDependencies, prepareDependencies } from '../bin/devdash-native.js';
 
 const execute = promisify(execFile);
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -102,6 +102,24 @@ test('launcher accepts only trusted configuration flags and browser-supplied met
   }
   await writeFile(config, '{"home":123}');
   assert.throws(() => launcherOptions(['--launch-config', config]), /Invalid native launcher configuration/);
+});
+
+test('npm discovery supports Windows, POSIX prefix and explicit npm runner layouts without a shell', async t => {
+  const directory = await fixture(t);
+  const executable = join(directory, 'bin', windows ? 'node.exe' : 'node');
+  for (const npm of [
+    join(directory, 'bin', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    join(directory, 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    join(directory, 'tools', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    join(directory, 'runner', 'npm-cli.js'),
+  ]) {
+    await mkdir(join(npm, '..'), { recursive: true });
+    await writeFile(npm, '');
+    const env = { PATH: join(directory, 'tools'), npm_execpath: npm === join(directory, 'runner', 'npm-cli.js') ? npm : undefined };
+    assert.equal(findNpm({ executable, env }), npm);
+    await rm(npm);
+  }
+  assert.throws(() => findNpm({ executable, env: { PATH: '', npm_execpath: join(directory, 'yarn.js') } }), /npm-cli.js was not found/);
 });
 
 test('dependency bootstrap skips installed dependencies and hides npm with stderr-only logs', async t => {

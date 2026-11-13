@@ -31,6 +31,20 @@ export function missingDependencies(source = root) {
   return !existsSync(join(source, 'node_modules', '.bin', process.platform === 'win32' ? 'cr.cmd' : 'cr'));
 }
 
+export function findNpm({ executable = process.execPath, env = process.env } = {}) {
+  const directories = [dirname(executable), ...(env.PATH ?? '').split(delimiter).filter(Boolean)];
+  const candidates = [
+    ...(env.npm_execpath?.endsWith('npm-cli.js') ? [env.npm_execpath] : []),
+    ...directories.flatMap(directory => [
+      join(directory, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+      join(directory, '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    ]),
+  ];
+  const npm = candidates.find(candidate => existsSync(candidate));
+  if (!npm) throw new Error('npm-cli.js was not found beside Node.js or on PATH; install npm and retry.');
+  return npm;
+}
+
 export function prepareDependencies({ source = root, missing = missingDependencies, run = spawnSync } = {}) {
   if (Number(process.versions.node.split('.')[0]) < 22) throw new Error('DevDash requires Node.js 22 or newer.');
   assertCheckout(source);
@@ -43,12 +57,7 @@ export function prepareDependencies({ source = root, missing = missingDependenci
   if (!workspaces?.includes('packages/cr') || !lock.packages?.['packages/cr']) {
     throw new Error('Native-host bootstrap requires package.json and package-lock.json containing the packages/cr workspace; use the full source checkout.');
   }
-  const candidates = [
-    join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js'),
-    ...(process.env.PATH ?? '').split(delimiter).map(directory => join(directory, 'node_modules', 'npm', 'bin', 'npm-cli.js')),
-  ];
-  const npm = candidates.find(candidate => existsSync(candidate));
-  if (!npm) throw new Error('npm-cli.js was not found beside Node.js or on PATH; install npm and retry.');
+  const npm = findNpm();
   process.stderr.write('DevDash: missing dependencies; running npm ci --no-audit --no-fund.\n');
   const result = run(process.execPath, [npm, 'ci', '--no-audit', '--no-fund'], {
     cwd: source, stdio: ['ignore', 2, 2], windowsHide: true, shell: false,

@@ -503,75 +503,75 @@ test('ADO PR empty result is complete and uses active status by default', async 
   assert.deepEqual(await queryProfile(adoPrProfile, cli), {
     items: [], truncated: false,
   });
-
-  test('ADO PR object queries forward only supported native parameters on every page and existence probe', async () => {
-    const cli = fakeCli([Array.from({ length: 100 }, (_, n) => pr(n + 1)), []]);
-    const query = { author: 'author@example.com', reviewer: 'reviewer@example.com',
-      sourceBranch: 'feature/cache & literal', targetBranch: 'refs/heads/main', status: 'all' };
-    const result = await queryProfile({ ...adoProfile, resource: 'prs', repository: 'Repo Name', limit: 100,
-      query, filter: 'title:PR' }, cli);
-    assert.equal(result.items.length, 100);
-    assert.equal(result.truncated, false);
-    assert.equal(cli.calls.length, 2);
-    for (const { command, args } of cli.calls) {
-      assert.equal(command, 'az');
-      assert.equal(flag(args, '--creator'), query.author);
-      assert.equal(flag(args, '--reviewer'), query.reviewer);
-      assert.equal(flag(args, '--source-branch'), query.sourceBranch);
-      assert.equal(flag(args, '--target-branch'), query.targetBranch);
-      assert.equal(flag(args, '--status'), query.status);
-      assert.equal(flag(args, '--repository'), 'Repo Name');
-      assert.equal(args.includes('title:PR'), false);
-      assert.equal(args.includes('--query'), false);
-    }
-    assert.equal(flag(cli.calls[1].args, '--top'), '1');
-  });
-
-  test('ADO PR branch and reviewer concepts are normalized independently of assignees', async () => {
-    const row = { ...pr(1), sourceRefName: 'refs/heads/feature/cache', targetRefName: 'refs/heads/main',
-      reviewers: [{ uniqueName: 'first@example.com' }, { displayName: 'Second Person' }, { id: 'reviewer-id' }] };
-    const result = await queryProfile({ ...adoProfile, resource: 'prs', query: {},
-      filter: 'source-branch:cache targetBranch:main reviewer:second author:author' }, fakeCli([[row]]));
-    assert.equal(result.items.length, 1);
-    assert.equal(result.items[0].sourceBranch, 'feature/cache');
-    assert.equal(result.items[0].targetBranch, 'main');
-    assert.deepEqual(result.items[0].reviewers, ['first@example.com', 'Second Person', 'reviewer-id']);
-    assert.deepEqual(result.items[0].assignees, []);
-    const nullable = await queryProfile({ ...adoProfile, resource: 'prs', query: {} },
-      fakeCli([[{ ...pr(1), sourceRefName: null, targetRefName: null, reviewers: null }]]));
-    assert.equal(nullable.items[0].sourceBranch, null);
-    assert.equal(nullable.items[0].targetBranch, null);
-    assert.deepEqual(nullable.items[0].reviewers, []);
-    for (const update of [{ sourceRefName: {} }, { targetRefName: '' }, { targetRefName: 'refs/heads/' }, { reviewers: 'someone' }]) {
-      await assert.rejects(queryProfile({ ...adoProfile, resource: 'prs', query: {} },
-        fakeCli([[{ ...pr(1), ...update }]])), { code: 'PROVIDER_RESPONSE' });
-    }
-  });
-
-  test('ADO structured bugs support WIQL and saved IDs without passing generic filter terms to az', async () => {
-    const wiql = fakeCli([[bug(1), bug(2)]]);
-    const result = await queryProfile({ ...adoProfile, query: { wiql: adoProfile.query }, filter: 'title:"Bug 2"' }, wiql);
-    assert.deepEqual(result.items.map(item => item.id), ['2']);
-    assert.equal(flag(wiql.calls[0].args, '--wiql'), adoProfile.query);
-    assert.ok(!wiql.calls[0].args.includes('title:"Bug 2"'));
-    const saved = fakeCli([{ queryType: 'flat' }, [bug(1)]]);
-    await queryProfile({ ...adoProfile, query: { queryId: '01234567-89ab-cdef-0123-456789abcdef' } }, saved);
-    assert.equal(flag(saved.calls[1].args, '--id'), '01234567-89ab-cdef-0123-456789abcdef');
-  });
-
-  test('Invalid native options and filter properties fail before running external provider commands', async () => {
-    for (const update of [
-      { query: { unsupported: 'SECRET_QUERY' } }, { query: { status: 'open' } }, { query: 'author:someone' },
-    ]) {
-      const cli = fakeCli([]);
-      await assert.rejects(queryProfile({ ...adoProfile, resource: 'prs', ...update }, cli), { code: 'INVALID_PROFILE' });
-      assert.equal(cli.calls.length, 0);
-    }
-    const cli = fakeCli([]);
-    await assert.rejects(queryProfile({ ...ghProfile, filter: 'sourceBranch:main' }, cli), { code: 'INVALID_FILTER' });
-    assert.equal(cli.calls.length, 0);
-  });
   assert.equal(flag(cli.calls[0].args, '--status'), 'active');
+});
+
+test('ADO PR object queries forward only supported native parameters on every page and existence probe', async () => {
+  const cli = fakeCli([Array.from({ length: 100 }, (_, n) => pr(n + 1)), []]);
+  const query = { author: 'author@example.com', reviewer: 'reviewer@example.com',
+    sourceBranch: 'feature/cache & literal', targetBranch: 'refs/heads/main', status: 'all' };
+  const result = await queryProfile({ ...adoProfile, resource: 'prs', repository: 'Repo Name', limit: 100,
+    query, filter: 'title:PR' }, cli);
+  assert.equal(result.items.length, 100);
+  assert.equal(result.truncated, false);
+  assert.equal(cli.calls.length, 2);
+  for (const { command, args } of cli.calls) {
+    assert.equal(command, 'az');
+    assert.equal(flag(args, '--creator'), query.author);
+    assert.equal(flag(args, '--reviewer'), query.reviewer);
+    assert.equal(flag(args, '--source-branch'), query.sourceBranch);
+    assert.equal(flag(args, '--target-branch'), query.targetBranch);
+    assert.equal(flag(args, '--status'), query.status);
+    assert.equal(flag(args, '--repository'), 'Repo Name');
+    assert.equal(args.includes('title:PR'), false);
+    assert.equal(args.includes('--query'), false);
+  }
+  assert.equal(flag(cli.calls[1].args, '--top'), '1');
+});
+
+test('ADO PR branch and reviewer concepts are normalized independently of assignees', async () => {
+  const row = { ...pr(1), sourceRefName: 'refs/heads/feature/cache', targetRefName: 'refs/heads/main',
+    reviewers: [{ uniqueName: 'first@example.com' }, { displayName: 'Second Person' }, { id: 'reviewer-id' }] };
+  const result = await queryProfile({ ...adoProfile, resource: 'prs', query: {},
+    filter: 'source-branch:cache targetBranch:main reviewer:second author:author' }, fakeCli([[row]]));
+  assert.equal(result.items.length, 1);
+  assert.equal(result.items[0].sourceBranch, 'feature/cache');
+  assert.equal(result.items[0].targetBranch, 'main');
+  assert.deepEqual(result.items[0].reviewers, ['first@example.com', 'Second Person', 'reviewer-id']);
+  assert.deepEqual(result.items[0].assignees, []);
+  const nullable = await queryProfile({ ...adoProfile, resource: 'prs', query: {} },
+    fakeCli([[{ ...pr(1), sourceRefName: null, targetRefName: null, reviewers: null }]]));
+  assert.equal(nullable.items[0].sourceBranch, null);
+  assert.equal(nullable.items[0].targetBranch, null);
+  assert.deepEqual(nullable.items[0].reviewers, []);
+  for (const update of [{ sourceRefName: {} }, { targetRefName: '' }, { targetRefName: 'refs/heads/' }, { reviewers: 'someone' }]) {
+    await assert.rejects(queryProfile({ ...adoProfile, resource: 'prs', query: {} },
+      fakeCli([[{ ...pr(1), ...update }]])), { code: 'PROVIDER_RESPONSE' });
+  }
+});
+
+test('ADO structured bugs support WIQL and saved IDs without passing generic filter terms to az', async () => {
+  const wiql = fakeCli([[bug(1), bug(2)]]);
+  const result = await queryProfile({ ...adoProfile, query: { wiql: adoProfile.query }, filter: 'title:"Bug 2"' }, wiql);
+  assert.deepEqual(result.items.map(item => item.id), ['2']);
+  assert.equal(flag(wiql.calls[0].args, '--wiql'), adoProfile.query);
+  assert.ok(!wiql.calls[0].args.includes('title:"Bug 2"'));
+  const saved = fakeCli([{ queryType: 'flat' }, [bug(1)]]);
+  await queryProfile({ ...adoProfile, query: { queryId: '01234567-89ab-cdef-0123-456789abcdef' } }, saved);
+  assert.equal(flag(saved.calls[1].args, '--id'), '01234567-89ab-cdef-0123-456789abcdef');
+});
+
+test('Invalid native options and filter properties fail before running external provider commands', async () => {
+  for (const update of [
+    { query: { unsupported: 'SECRET_QUERY' } }, { query: { status: 'open' } }, { query: 'author:someone' },
+  ]) {
+    const cli = fakeCli([]);
+    await assert.rejects(queryProfile({ ...adoProfile, resource: 'prs', ...update }, cli), { code: 'INVALID_PROFILE' });
+    assert.equal(cli.calls.length, 0);
+  }
+  const cli = fakeCli([]);
+  await assert.rejects(queryProfile({ ...ghProfile, filter: 'sourceBranch:main' }, cli), { code: 'INVALID_FILTER' });
+  assert.equal(cli.calls.length, 0);
 });
 
 test('Project-wide ADO PR pagination never infers a repository from cwd or CLI defaults', async () => {
@@ -749,18 +749,19 @@ test('Chromium bugs invoke the external cr CLI and use a bounded per-request tim
     },
   });
 
-  test('Chromium structured bug selectors and generic filters stay separate from the cr command', async () => {
-    const items = [chromiumItem('1', 'bug'), { ...chromiumItem('2', 'bug'), title: 'Match this bug' }];
-    const cli = fakeCli([crResponse(items)]);
-    const result = await queryProfile({ provider: 'chromium', resource: 'bugs',
-      query: { bugIds: ['1', '2'] }, filter: 'title:match' }, cli);
-    assert.deepEqual(result.items.map(item => item.id), ['2']);
-    assert.deepEqual(cli.calls[0], { command: 'cr', args: ['bugs', 'view', '1', '2', '--limit', '1000'] });
-  });
   assert.equal(result.truncated, true);
   for (const bugIds of [undefined, [], [1], ['0'], ['1', '1'], ['2', 'x'], Array(101).fill('1')]) {
     await assert.rejects(queryProfile({ ...profile, bugIds }), { code: 'INVALID_PROFILE' });
   }
+});
+
+test('Chromium structured bug selectors and generic filters stay separate from the cr command', async () => {
+  const items = [chromiumItem('1', 'bug'), { ...chromiumItem('2', 'bug'), title: 'Match this bug' }];
+  const cli = fakeCli([crResponse(items)]);
+  const result = await queryProfile({ provider: 'chromium', resource: 'bugs',
+    query: { bugIds: ['1', '2'] }, filter: 'title:match' }, cli);
+  assert.deepEqual(result.items.map(item => item.id), ['2']);
+  assert.deepEqual(cli.calls[0], { command: 'cr', args: ['bugs', 'view', '1', '2', '--limit', '1000'] });
 });
 
 test('Chromium native bug searches use cr list and preserve truncation after local filtering', async () => {

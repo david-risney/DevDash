@@ -316,18 +316,6 @@ test('logger validates request UUID and allowlists all metadata, preserving vers
     durationMs: 10, reason: 'PRIVATE', message: 'PRIVATE', query: 'PRIVATE', profile: 'PRIVATE',
   });
 
-  test('search diagnostic events retain safe phases and counts without native search text or result bodies', async t => {
-    const path = await home(t), logger = createLogger({ home: path });
-    for (const [event, phase] of [
-      ['chromium.search.start', 'search-page'], ['chromium.search.page', 'search-extract'],
-      ['chromium.search.complete', 'search-extract'], ['chromium.search.failed', 'search-ready'],
-    ]) await logger.log(event, { phase, count: 2, query: 'PRIVATE_QUERY', title: 'PRIVATE_TITLE',
-      html: 'PRIVATE_HTML', url: 'https://example.com/?token=PRIVATE_TOKEN' });
-    const records = (await readFile(logger.file, 'utf8')).trim().split('\n').map(JSON.parse);
-    assert.equal(records.length, 4);
-    assert.ok(records.every(record => record.phase.startsWith('search-') && record.count === 2));
-    assert.doesNotMatch(JSON.stringify(records), /PRIVATE/);
-  });
   await logger.log('cli.start', { phase: 'PRIVATE', code: 'PRIVATE', bugId: 'PRIVATE' });
   const log = await readFile(logger.file, 'utf8');
   assert.doesNotMatch(log, /PRIVATE|TOKEN/);
@@ -337,6 +325,19 @@ test('logger validates request UUID and allowlists all metadata, preserving vers
   assert.match(row.requestId, /^[0-9a-f-]{36}$/);
   assert.equal((await logger.tail(100, true)).length, 1);
   await assert.rejects(logger.tail(1001), { code: 'INVALID_ARGUMENT' });
+});
+
+test('search diagnostic events retain safe phases and counts without native search text or result bodies', async t => {
+  const path = await home(t), logger = createLogger({ home: path });
+  for (const [event, phase] of [
+    ['chromium.search.start', 'search-page'], ['chromium.search.page', 'search-extract'],
+    ['chromium.search.complete', 'search-extract'], ['chromium.search.failed', 'search-ready'],
+  ]) await logger.log(event, { phase, count: 2, query: 'PRIVATE_QUERY', title: 'PRIVATE_TITLE',
+    html: 'PRIVATE_HTML', url: 'https://example.com/?token=PRIVATE_TOKEN' });
+  const records = (await readFile(logger.file, 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(records.length, 4);
+  assert.ok(records.every(record => record.phase.startsWith('search-') && record.count === 2));
+  assert.doesNotMatch(JSON.stringify(records), /PRIVATE/);
 });
 
 test('log rotation is bounded to five 2 MiB files', async t => {

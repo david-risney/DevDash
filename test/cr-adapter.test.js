@@ -73,37 +73,6 @@ test('Actual cr executable accepts adapter flags and reports correlated network 
     }),
   });
 
-  test('Chromium search has independent filtered caches, invalidation and failure preservation', async t => {
-    const home = await mkdtemp(join(tmpdir(), 'devdash-cr-search-'));
-    t.after(() => rm(home, { recursive: true, force: true }));
-    const calls = [];
-    let fail = false;
-    const service = new DevDash({ home }, {
-      queryProfile: profile => queryProfile(profile, { runJson: async (command, args) => {
-        calls.push({ command, args });
-        if (fail) throw new DevDashError('BUG_TIMEOUT', 'Search timed out.');
-        return { schemaVersion: 1, items: [item], truncated: args[1] === 'list' };
-      } }),
-    });
-    const profile = { refreshSeconds: 900, queries: {
-      tracked: chromium,
-      search: { provider: 'chromium', resource: 'bugs', query: 'type:bug title:PRIVATE_SEARCH', filter: 'state:fixed' },
-    } };
-    await service.setProfile('bugs', profile);
-    const first = await service.get('bugs');
-    assert.equal(first.failed, 0);
-    assert.deepEqual(first.queries.search.items, [item]);
-    assert.equal(first.queries.search.truncated, true);
-    assert.deepEqual(calls[1].args, ['bugs', 'list', '--query=type:bug title:PRIVATE_SEARCH', '--limit', '1000']);
-    fail = true;
-    await assert.rejects(service.get('bugs', { query: 'search', refresh: true }), { code: 'BUG_TIMEOUT' });
-    assert.deepEqual((await service.get('bugs', { query: 'search', cachedOnly: true })).items, [item]);
-    profile.queries.search.query = 'type:bug title:OTHER_SEARCH';
-    await service.setProfile('bugs', profile);
-    await assert.rejects(service.get('bugs', { query: 'search', cachedOnly: true }), { code: 'CACHE_MISS' });
-    assert.deepEqual((await service.get('bugs', { query: 'tracked', cachedOnly: true })).items, [item]);
-    assert.doesNotMatch(await readFile(service.diagnostics.file, 'utf8'), /PRIVATE_SEARCH|OTHER_SEARCH|PUBLIC_BUG_CONTENT/);
-  });
   // Fetch refuses port 1 before opening a socket.
   for (const query of ['status:merged', '-status:merged']) {
     await service.setProfile('closed-port', {
@@ -121,4 +90,38 @@ test('Actual cr executable accepts adapter flags and reports correlated network 
     entry.code === 'PROVIDER_NETWORK' && entry.requestId === failure.requestId)));
   assert.equal(childLogs.includes('status:merged'), false);
   assert.equal(childLogs.includes('127.0.0.1'), false);
+});
+
+test('Chromium search has independent filtered caches, invalidation and failure preservation', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'devdash-cr-search-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const calls = [];
+  let fail = false;
+  const service = new DevDash({ home }, {
+    queryProfile: profile => queryProfile(profile, { runJson: async (command, args) => {
+      calls.push({ command, args });
+      if (fail) throw new DevDashError('BUG_TIMEOUT', 'Search timed out.');
+      return { schemaVersion: 1, items: [item], truncated: args[1] === 'list' };
+    } }),
+  });
+  const profile = { refreshSeconds: 900, queries: {
+    tracked: chromium,
+    search: { provider: 'chromium', resource: 'bugs', query: 'type:bug title:PRIVATE_SEARCH', filter: 'state:fixed' },
+  } };
+  await service.setProfile('bugs', profile);
+  const first = await service.get('bugs');
+  assert.equal(first.failed, 0);
+  assert.deepEqual(first.queries.search.items, [item]);
+  assert.equal(first.queries.search.truncated, true);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls.find(call => call.args[1] === 'list').args,
+    ['bugs', 'list', '--query=type:bug title:PRIVATE_SEARCH', '--limit', '1000']);
+  fail = true;
+  await assert.rejects(service.get('bugs', { query: 'search', refresh: true }), { code: 'BUG_TIMEOUT' });
+  assert.deepEqual((await service.get('bugs', { query: 'search', cachedOnly: true })).items, [item]);
+  profile.queries.search.query = 'type:bug title:OTHER_SEARCH';
+  await service.setProfile('bugs', profile);
+  await assert.rejects(service.get('bugs', { query: 'search', cachedOnly: true }), { code: 'CACHE_MISS' });
+  assert.deepEqual((await service.get('bugs', { query: 'tracked', cachedOnly: true })).items, [item]);
+  assert.doesNotMatch(await readFile(service.diagnostics.file, 'utf8'), /PRIVATE_SEARCH|OTHER_SEARCH|PUBLIC_BUG_CONTENT/);
 });
