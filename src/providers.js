@@ -7,6 +7,7 @@ import { adoProvider } from './providers/ado.js';
 import { chromiumProvider } from './providers/chromium.js';
 import { providerProfile } from './query.js';
 import { compileFilter, filterItems } from './filters.js';
+import { githubAccountOptions } from './github-auth.js';
 
 export { createProviderRegistry } from './providers/contract.js';
 export const providerRegistry = createProviderRegistry([githubProvider, adoProvider, chromiumProvider]);
@@ -53,13 +54,19 @@ export async function queryProfile(profile, dependencies = {}) {
     throw new DevDashError('UNSUPPORTED_PROVIDER', 'Unsupported provider or resource.');
   }
   const executeJson = dependencies.runJson ?? defaultRunJson;
+  const effective = { ...providerProfile(profile), limit };
+  if (effective.provider === 'github') githubQuery(effective);
+  const githubOptions = effective.provider === 'github' ? await githubAccountOptions(effective, dependencies) : undefined;
   const context = {
+    fetch: dependencies.fetch ?? globalThis.fetch,
     runJson: async (command, args, options) => {
       if (command !== adapter.cli) {
         throw new DevDashError('INVALID_PROVIDER', 'Provider attempted to run a command outside its adapter contract.');
       }
       const processOptions = command === 'cr'
         ? { ...options, ...providerProcessOptions() }
+        : githubOptions
+          ? { ...options, env: { ...options?.env, ...githubOptions.env } }
         : options;
       try {
         return await executeJson(command, args, processOptions);
@@ -69,7 +76,6 @@ export async function queryProfile(profile, dependencies = {}) {
       }
     },
   };
-  const effective = { ...providerProfile(profile), limit };
   const result = validateQueryResult(effective, await adapter.query(effective, context));
-  return { ...result, items: filterItems(result.items, filter) };
+  return { ...result, items: await filterItems(result.items, filter) };
 }

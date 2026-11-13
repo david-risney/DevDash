@@ -69,7 +69,10 @@ test('GitHub uses JSON search arguments and normalizes only public fields', asyn
 });
 
 test('GitHub PRs use pull web URLs, draft, custom host and query', async () => {
-  const cli = fakeCli([ghResponse([{ ...ghItem(2), pull_request: {}, draft: true }])]);
+  const cli = fakeCli([ghResponse([{ ...ghItem(2), pull_request: {}, draft: true }]), {
+    number: 2, base: { repo: { full_name: 'owner/repo' } },
+    merged: false, merged_at: null, requested_reviewers: [], requested_teams: [],
+  }]);
   const { items } = await queryProfile({ ...ghProfile, resource: 'prs', hostname: 'git.example.com', query: 'label:"needs review"' }, cli);
   assert.equal(items[0].kind, 'pr');
   assert.equal(items[0].url, 'https://git.example.com/owner/repo/pull/2');
@@ -92,7 +95,7 @@ test('GitHub providerData includes only the node ID, never raw search fields', a
 test('ADO providerData curates merge status and reviewer votes without moving shared fields', async () => {
   const row = { ...pr(1), sourceRefName: 'refs/heads/feature', targetRefName: 'refs/heads/main',
     mergeStatus: 'succeeded', description: 'PRIVATE_BODY', reviewers: [
-      { uniqueName: 'reviewer@example.com', vote: 10, isRequired: true, imageUrl: 'PRIVATE_IMAGE' },
+      { uniqueName: 'reviewer@example.com', vote: 10, isRequired: true, imageUrl: 'https://example.com/avatar' },
       { displayName: 'Another reviewer', vote: -5, isRequired: false },
       { id: 'reviewer-id' },
     ] };
@@ -298,7 +301,7 @@ test('ADO boards list normalization and WIQL flags', async () => {
   const cli = fakeCli([[bug(1)]]);
   const result = await queryProfile(adoProfile, cli);
   assert.equal(result.truncated, false);
-  assert.deepEqual(Object.keys(result.items[0]), normalizedKeys);
+  assert.deepEqual(Object.keys(result.items[0]), [...normalizedKeys, 'type']);
   assert.equal(result.items[0].url, 'https://dev.azure.com/org/My%20Project/_workitems/edit/1');
   assert.equal(result.items[0].repository, null);
   assert.deepEqual(result.items[0].labels, ['tag1', 'tag2']);

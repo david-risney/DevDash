@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { chromiumProcessFailure, processFailureDetails, resolveWindowsCr, runJson, runText } from '../src/process.js';
+import { chromiumProcessFailure, githubProcessFailure, processFailureDetails, resolveWindowsCr, runJson, runText } from '../src/process.js';
 
 test('external process arguments preserve shell metacharacters without execution', async () => {
   const argument = '& echo injected %PATH% $(touch nope) "quoted"';
@@ -30,6 +30,8 @@ test('process diagnostics classify common failures without copying stderr or sec
     ['HTTP 401 Bad credentials: SECRET_TOKEN', 'authentication', 401],
     ['HTTP 403 Forbidden: SECRET_TOKEN', 'permission', 403],
     ['HTTP 429 rate limit exceeded SECRET_TOKEN', 'rate-limit', 429],
+    ['HTTP 403 API rate limit exceeded SECRET_TOKEN', 'rate-limit', 403],
+    ['HTTP 403 Resource protected by organization SAML enforcement SECRET_TOKEN', 'sso', 403],
     ['TF401232: Invalid query contains SECRET_QUERY', 'invalid-query', undefined],
     ['Unexpected server failure SECRET_TOKEN', 'exit', undefined],
   ]) {
@@ -42,6 +44,18 @@ test('process diagnostics classify common failures without copying stderr or sec
   assert.equal(processFailureDetails({ killed: true, stderr: 'HTTP 403' }).reason, 'timeout');
   assert.equal(processFailureDetails({ code: 'ENOENT' }).reason, 'not-found');
   assert.equal(processFailureDetails({ code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' }).reason, 'output-limit');
+});
+
+test('GitHub SSO failures are actionable without exposing private authorization URLs or token diagnostics', () => {
+  const failure = githubProcessFailure({ code: 1,
+    stderr: 'gh: Resource protected by organization SAML enforcement (HTTP 403). SECRET_TOKEN https://example.com/private-authorization',
+  });
+  assert.equal(failure.code, 'GITHUB_SSO_REQUIRED');
+  assert.ok(failure.message.includes('query account'));
+  assert.ok(!JSON.stringify(failure).includes('SECRET_TOKEN'));
+  assert.ok(!JSON.stringify(failure).includes('private-authorization'));
+  assert.equal(githubProcessFailure({ code: 1, stderr: 'HTTP 403 Forbidden' }), undefined);
+  assert.equal(githubProcessFailure({ code: 1, stderr: 'HTTP 403 SAML', killed: true }), undefined);
 });
 
 async function npmCrFixture(t) {

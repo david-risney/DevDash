@@ -90,6 +90,58 @@ test('bare cr results, single snapshots, errors, and empty documents have explic
   }
 });
 
+test('all formats accept enriched ADO PR properties without printing them or mutating JSON', async () => {
+  const rows = [
+    testItem({ provider: 'ado', kind: 'pr', providerData: {
+      properties: { ReviewMetadata: { $type: 'System.String', $value: '{"private":"HIDDEN_PROPERTY_PAYLOAD"}' } },
+    } }),
+    testItem({ provider: 'ado', kind: 'pr', id: '2', providerData: {
+      properties: { BuildMetadata: { $type: 'System.Boolean', $value: true } },
+    } }),
+    testItem({ provider: 'ado', kind: 'pr', id: '3', providerData: { properties: {} } }),
+  ];
+  const section = snapshot({ provider: 'ado', resource: 'prs', items: rows });
+  const documents = [
+    section,
+    { schemaVersion: 1, items: rows, truncated: false },
+    { schemaVersion: 1, profile: 'work', queries: { reviews: section } },
+    { schemaVersion: 1, results: [{ schemaVersion: 1, profile: 'work', queries: { reviews: section } }] },
+    snapshot({ provider: 'ado', resource: 'prs', items: [rows[2]] }),
+  ];
+  const original = structuredClone(documents);
+  for (const format of formats) {
+    for (const document of documents) {
+      const { output, failed } = formatResults(document, format);
+      assert.equal(failed, 0);
+      assert.ok(output.includes('Synthetic cache regression'));
+      for (const hidden of ['ReviewMetadata', 'BuildMetadata', 'HIDDEN_PROPERTY_PAYLOAD', '$type', '$value']) {
+        assert.ok(!output.includes(hidden));
+      }
+    }
+    const result = await convert(format, JSON.stringify(documents[3]));
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stderr, '');
+    assert.ok(!result.stdout.includes('HIDDEN_PROPERTY_PAYLOAD'));
+  }
+  assert.deepEqual(documents, original);
+});
+
+test('formatting still rejects malformed property envelopes and properties on other providers', () => {
+  const row = testItem({ provider: 'ado', kind: 'pr', providerData: { properties: {} } });
+  for (const properties of [null, [], 'invalid', { ReviewMetadata: {} },
+    { ReviewMetadata: { $type: 'System.String', $value: {} } }]) {
+    assert.throws(() => formatResults(snapshot({
+      provider: 'ado', resource: 'prs', items: [{ ...row, providerData: { properties } }],
+    }), 'text'), /Invalid DevDash/);
+  }
+  assert.throws(() => formatResults(snapshot({
+    provider: 'ado', resource: 'prs', items: [row, { ...row, id: '2', providerData: {} }],
+  }), 'text'), /Invalid DevDash/);
+  assert.throws(() => formatResults(snapshot({
+    items: [testItem({ providerData: { properties: {} } })],
+  }), 'text'), /Invalid DevDash/);
+});
+
 test('Markdown escapes untrusted labels and HTML and keeps URL delimiters inside the link destination', () => {
   const item = testItem({
     title: 'Bad [label](javascript:alert(1)) <img> & *bold* | table `code`',

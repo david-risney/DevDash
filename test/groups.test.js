@@ -83,8 +83,8 @@ test('a grouped profile returns exactly four independent named lists with provid
   }
   assert.equal(result.queries.bugs.expiresAt, '2026-01-01T00:05:00.000Z');
   assert.equal(result.queries['my-prs'].expiresAt, '2026-01-01T00:02:00.000Z');
-  assert.equal(calls[2].creator, 'you@example.com');
-  assert.equal(calls[3].reviewer, 'you@example.com');
+  assert.equal(calls.filter(query => query.creator === 'you@example.com').length, 1);
+  assert.equal(calls.filter(query => query.reviewer === 'you@example.com').length, 1);
   assert.equal((await service.get('edge')).fromCache, true);
   assert.equal(calls.length, 4);
 });
@@ -102,7 +102,7 @@ test('mixed provider queries remain separate and can use prototype property name
   assert.equal(result.queries.constructor.provider, 'github');
   assert.equal(result.queries['chromium-bugs'].resource, 'bugs');
   assert.equal(result.queries.cls.resource, 'cls');
-  assert.deepEqual(calls.map((query) => query.provider), ['github', 'chromium', 'chromium']);
+  assert.deepEqual(calls.map((query) => query.provider).sort(), ['chromium', 'chromium', 'github']);
   assert.notEqual(service.cachePath('edge', 'constructor'), service.cachePath('edge'));
 });
 

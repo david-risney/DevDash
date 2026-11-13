@@ -9,12 +9,16 @@ const context = new AsyncLocalStorage();
 const MAX_BYTES = 2 * 1024 * 1024;
 const MAX_FILES = 5;
 const codes = new Set([
+  'FILTER_FAILED', 'FILTER_RESULT', 'FILTER_LIMIT',
   'INVALID_PROFILE', 'INVALID_CONFIG', 'INVALID_FILTER', 'INVALID_ARGUMENT', 'INVALID_JSON', 'INVALID_INPUT', 'INVALID_PRESENTATION', 'INPUT_TOO_LARGE',
   'CONFIG_NOT_FOUND', 'CONFIG_EXISTS', 'PROFILE_NOT_FOUND', 'QUERY_NOT_FOUND', 'INVALID_CACHE', 'CACHE_MISS',
   'PROFILE_CHANGED', 'INVALID_PROVIDER_RESPONSE', 'PROVIDER_RESPONSE', 'PROVIDER_HTTP',
-  'PROVIDER_NETWORK', 'CLI_FAILED', 'CLI_NOT_FOUND', 'UNSUPPORTED_PROVIDER', 'UNSUPPORTED_QUERY',
+  'PROVIDER_NETWORK', 'CLI_FAILED', 'CLI_NOT_FOUND', 'GITHUB_SSO_REQUIRED', 'UNSUPPORTED_PROVIDER', 'UNSUPPORTED_QUERY',
   'UNSUPPORTED_AZ_LAUNCHER', 'UNSUPPORTED_CR_LAUNCHER', 'INVALID_PROVIDER', 'INVALID_REQUEST', 'MESSAGE_TOO_LARGE', 'INVALID_FRAME', 'BUSY',
   'LOCK_LOST', 'LOG_WRITE_FAILED', 'INVALID_LOG', 'BROWSER_NOT_INSTALLED', 'BROWSER_FAILED',
+  'BACKGROUND_START_FAILED', 'BACKGROUND_CANCELLED', 'REVISION_CONFLICT', 'CURSOR_EXPIRED',
+  'AVATAR_UNAVAILABLE', 'AVATAR_TOO_LARGE', 'AVATAR_FAILED',
+  'NATIVE_REGISTRATION_CONFLICT', 'NATIVE_REGISTRATION_FAILED', 'NATIVE_NOT_INSTALLED', 'UNSUPPORTED_PLATFORM', 'SOURCE_CHECKOUT_REQUIRED',
   'BUG_UNAVAILABLE', 'BUG_TIMEOUT', 'BUG_HTTP', 'BUG_RESPONSE', 'BUG_EXTRACTION_FAILED',
   'BROWSER_CLEANUP_FAILED', 'BUG_ACCESS_DENIED', 'BUG_NOT_FOUND', 'BUG_RENDER_FAILED',
   'ENOENT', 'EACCES', 'EPERM', 'ENOSPC', 'EIO', 'EPIPE', 'EEXIST', 'ENOTDIR', 'EISDIR', 'ETIMEDOUT',
@@ -28,10 +32,10 @@ export function diagnosticCode(error) {
 
 export function safeCommand(positionals) {
   const commands = new Set(['init', 'config', 'profile', 'get', 'refresh', 'format', 'cache', 'watch',
-    'doctor', 'native-host', 'native-manifest', 'logs']);
+    'doctor', 'hello', 'query', 'avatar', 'native', 'native-host', 'native-manifest', 'logs']);
   if (!commands.has(positionals[0])) return 'invalid';
   const command = positionals[0];
-  if (!['config', 'profile', 'cache', 'logs'].includes(command)) return command;
+  if (!['config', 'profile', 'query', 'cache', 'logs'].includes(command)) return command;
   const actions = new Set(['show', 'validate', 'list', 'get', 'set', 'remove', 'status', 'clear', 'tail', 'path']);
   return `${command}.${actions.has(positionals[1]) ? positionals[1] : 'invalid'}`;
 }

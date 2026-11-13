@@ -40,6 +40,21 @@ function boolean(value) {
   if (typeof value !== 'boolean') invalid('Gerrit expected a boolean.');
   return value;
 }
+function count(value) {
+  if (!Number.isSafeInteger(value) || value < 0) invalid('Gerrit expected a nonnegative integer count.');
+  return value;
+}
+function account(value) {
+  if (value == null || typeof value === 'string') return null;
+  object(value);
+  const result = {};
+  if (value._account_id != null) result.id = id(value._account_id);
+  for (const [source, target] of [['username', 'login'], ['name', 'displayName']]) {
+    if (value[source] != null) result[target] = text(value[source], 'account metadata');
+  }
+  if (!result.login && value.email != null) result.login = text(value.email, 'account login');
+  return Object.keys(result).length ? result : null;
+}
 function item(row, host) {
   const number = id(row._number), project = text(row.project, 'project');
   const assignee = identity(row.assignee, ['email', 'username', 'name', '_account_id']);
@@ -48,16 +63,41 @@ function item(row, host) {
     ? (row.branch == null ? null : text(row.branch, 'branch').replace(/^refs\/heads\//, ''))
     : undefined;
   if (branch === '') invalid('Gerrit branch: expected a nonempty branch name.');
+  const authorIdentity = account(row.owner);
+  const assigneeIdentity = account(row.assignee);
+  const providerData = row.change_id == null ? {} : { changeId: text(row.change_id, 'change ID') };
+  for (const [source, target] of [['insertions', 'insertions'], ['deletions', 'deletions'],
+    ['unresolved_comment_count', 'unresolvedCommentCount']]) {
+    if (Object.hasOwn(row, source)) providerData[target] = count(row[source]);
+  }
+  if (Object.hasOwn(row, 'labels')) {
+    const labels = object(row.labels);
+    if (Object.hasOwn(labels, 'Code-Review')) {
+      const label = object(labels['Code-Review']);
+      const votes = Object.hasOwn(label, 'all') ? label.all : [];
+      if (!Array.isArray(votes)) invalid('Gerrit Code-Review approvals must be an array.');
+      providerData.codeReviewScores = votes.map(vote => {
+        object(vote);
+        const score = vote.value === undefined ? 0 : vote.value;
+        if (!Number.isSafeInteger(score) || score < -2 || score > 2) invalid('Gerrit Code-Review score is invalid.');
+        return { reviewer: identity(vote, ['email', 'username', 'name', '_account_id']), score };
+      });
+    }
+  }
   return {
     provider: 'chromium', kind: 'cl', id: number,
     title: text(row.subject, 'subject'), state: text(row.status, 'status'),
     url: `${host}/c/${project.split('/').map(encodeURIComponent).join('/')}/+/${number}`,
-    repository: project, author: identity(row.owner, ['email', 'username', 'name']),
+    repository: project, author: identity(row.owner, ['email', 'username', 'name', '_account_id']),
     assignees: assignee ? [assignee] : [],
     labels: (row.hashtags ?? []).map(tag => text(tag, 'hashtag')),
     createdAt: date(row.created), updatedAt: date(row.updated),
     draft: boolean(row.work_in_progress ?? false),
-    providerData: row.change_id == null ? {} : { changeId: text(row.change_id, 'change ID') },
+    providerData,
+    ...(authorIdentity || assigneeIdentity ? { identities: {
+      ...(authorIdentity ? { author: authorIdentity } : {}),
+      ...(assigneeIdentity ? { assignees: [assigneeIdentity] } : {}),
+    } } : {}),
     ...(branch === undefined ? {} : { targetBranch: branch }),
   };
 }
@@ -99,6 +139,7 @@ export async function queryGerrit(options, dependencies = {}) {
     url.searchParams.set('n', String(top));
     url.searchParams.set('S', String(offset));
     url.searchParams.set('o', 'DETAILED_ACCOUNTS');
+    url.searchParams.append('o', 'DETAILED_LABELS');
     const started = Date.now();
     await log('http.start', { phase: 'gerrit-fetch', count: page + 1 });
     let rows;

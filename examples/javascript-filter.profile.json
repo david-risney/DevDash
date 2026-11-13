@@ -1,0 +1,16 @@
+{
+  "provider": "github",
+  "resource": "prs",
+  "repository": "david-risney/DevDash",
+  "query": "is:open",
+  "filter": {
+    "language": "javascript",
+    "expression": "!item.draft && hasText(item.title, params.text) && Date.parse(item.updatedAt) >= now - params.maxAgeDays * 86400000",
+    "params": {
+      "text": "cache",
+      "maxAgeDays": 30
+    }
+  },
+  "refreshSeconds": 300,
+  "limit": 100
+}

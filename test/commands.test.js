@@ -86,12 +86,37 @@ test('invalid arguments never silently change behavior', async (t) => {
     ['get'], ['get', 'name', '--all'], ['get', 'name', '--due'], ['refresh', 'name', '--cached-only'],
     ['cache', 'status'], ['config', 'wrong'], ['watch', '--interval', '0'], ['watch', '--all'],
     ['watch', 'one', 'two'], ['get', '--unknown'],
+    ['get', 'name', '--cache-mode', 'unknown'],
+    ['get', 'name', '--cache-mode', 'adaptive', '--cached-only'],
+    ['get', 'name', '--fast-query-ms', '500'],
+    ['get', 'name', '--cache-mode', 'adaptive', '--fast-query-ms', '0'],
+    ['get', 'name', '--cache-mode', 'adaptive', '--fast-query-ms', '60001'],
+    ['get', 'name', '--cache-mode', 'adaptive', '--fast-query-ms', '1.5'],
+    ['refresh', 'name', '--cache-mode', 'adaptive'],
+    ['watch', 'name', '--cache-mode', 'adaptive'],
   ]) {
     const operation = args[0] === 'watch' ? () => validateWatch(args) : () => executeCommand(args, { service });
     await assert.rejects(async () => operation(), { code: 'INVALID_ARGUMENT' });
   }
   assert.equal(validateWatch(['watch']).interval, 1);
   assert.equal(validateWatch(['watch', 'one', '--interval', '5']).interval, 5);
+});
+
+test('adaptive CLI policy and numeric threshold reach each selected query without changing the default', async t => {
+  const { service } = await fixture(t);
+  await service.setProfile('bugs', profile);
+  let options;
+  const original = service.get.bind(service);
+  service.get = async (name, value) => { options = value; return original(name, value); };
+  const adaptive = await executeCommand(['get', 'bugs', '--cache-mode', 'adaptive', '--fast-query-ms', '750'], { service });
+  assert.equal(options.cacheMode, 'adaptive');
+  assert.equal(options.fastQueryMs, 750);
+  assert.equal(adaptive.output.refreshStatus, 'complete');
+  const normal = await executeCommand(['get', 'bugs'], { service });
+  assert.equal(options.cacheMode, 'cache-first');
+  assert.ok(!Object.hasOwn(normal.output, 'refreshStatus'));
+  const batch = await executeCommand(['get', '--all', '--cache-mode', 'adaptive'], { service });
+  assert.equal(batch.output.results[0].refreshStatus, 'fresh');
 });
 
 test('malformed and excessively large profile input is explicitly rejected', async (t) => {

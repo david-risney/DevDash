@@ -9,6 +9,45 @@ const scope = { provider: 'ado', resource: 'prs', organization: 'https://dev.azu
 const saved = '01234567-89ab-cdef-0123-456789abcdef';
 const validate = profile => validateConfig({ version: 1, profiles: { test: profile } });
 
+test('GitHub authentication is explicitly gh or anonymous and never stores a PAT', () => {
+  const github = { provider: 'github', resource: 'bugs', repository: 'owner/repo', refreshSeconds: 300 };
+  for (const auth of ['gh', 'anonymous']) {
+    const profile = { ...github, auth };
+    validate(profile);
+    assert.equal(providerProfile(profile).auth, auth);
+    validate({ refreshSeconds: 300, queries: { public: profile } });
+  }
+  for (const auth of ['pat', 'PRIVATE_TOKEN', '', null, {}, true]) {
+    assert.throws(() => validate({ ...github, auth }), { code: 'INVALID_CONFIG' });
+    assert.throws(() => providerProfile({ ...github, auth }), { code: 'INVALID_PROFILE' });
+  }
+  assert.throws(() => validate({ ...github, auth: 'anonymous', token: 'PRIVATE_TOKEN' }), { code: 'INVALID_CONFIG' });
+  assert.throws(() => validate({ ...scope, auth: 'anonymous' }), { code: 'INVALID_CONFIG' });
+  assert.throws(() => providerProfile({ ...scope, auth: 'anonymous' }), { code: 'INVALID_PROFILE' });
+});
+
+test('ADO OR identity arrays and workItemTypes agree between schema and provider lowering', () => {
+  const query = { author: ['Alice', 'Bob'], reviewer: ['Carol', 'Dave'], status: 'active' };
+  validate({ ...scope, query });
+  assert.deepEqual(providerProfile({ ...scope, query }), {
+    ...scope, creator: query.author, reviewer: query.reviewer, status: 'active',
+  });
+  const bugScope = { ...scope, resource: 'bugs', repository: undefined,
+    query: { wiql: 'SELECT [System.Id] FROM WorkItems' }, workItemTypes: ['Bug', 'Task', 'User Story'] };
+  validate(JSON.parse(JSON.stringify(bugScope)));
+  assert.deepEqual(providerProfile(bugScope).workItemTypes, bugScope.workItemTypes);
+  for (const value of [[], ['Alice', 'Alice'], [''], [' '], ['Alice\nBob'], [1], null, Array.from({ length: 21 }, (_, i) => String(i))]) {
+    for (const field of ['author', 'reviewer']) {
+      assert.throws(() => validate({ ...scope, query: { [field]: value } }), { code: 'INVALID_CONFIG' });
+      assert.throws(() => providerProfile({ ...scope, query: { [field]: value } }), { code: 'INVALID_PROFILE' });
+    }
+    assert.throws(() => validate(JSON.parse(JSON.stringify({ ...bugScope, workItemTypes: value }))), { code: 'INVALID_CONFIG' });
+    assert.throws(() => providerProfile({ ...bugScope, workItemTypes: value }), { code: 'INVALID_PROFILE' });
+  }
+  assert.throws(() => validate({ ...scope, workItemTypes: ['Bug'] }), { code: 'INVALID_CONFIG' });
+  assert.throws(() => providerProfile({ ...scope, workItemTypes: ['Bug'] }), { code: 'INVALID_PROFILE' });
+});
+
 test('query web links preserve native search scope and use honest closest pages for unsupported web filters', () => {
   const gh = { provider: 'github', resource: 'prs', repository: 'owner/repo', query: 'author:@me "memory leak"', filter: 'title:local' };
   const before = structuredClone(gh);
@@ -115,8 +154,27 @@ test('filter validation is provider-aware for grouped and flat configuration and
     { code: 'INVALID_FILTER' });
 });
 
+test('JavaScript filter objects validate in flat/grouped profiles and never reach provider-native queries', () => {
+  const filter = {
+    language: 'javascript',
+    expression: 'item.providerData.votes.some(v => v.reviewer === params.me && v.vote === 0)',
+    params: { me: 'Alice', nested: { enabled: true, values: [null, 1, 'text'] } },
+  };
+  assert.doesNotThrow(() => validate({ ...scope, filter }));
+  assert.doesNotThrow(() => validate({ refreshSeconds: 300, queries: { prs: { ...scope, filter } } }));
+  assert.equal(Object.hasOwn(providerProfile({ ...scope, filter }), 'filter'), false);
+  for (const bad of [{ ...filter, language: 'js' }, { ...filter, extra: true }, { ...filter, params: null },
+    { ...filter, params: [] }, { expression: 'true' }]) {
+    assert.throws(() => validate({ ...scope, filter: bad }), { code: 'INVALID_CONFIG' });
+  }
+  for (const expression of ['item.', 'true; false', "'SECRET_FILTER_VALUE' +"]) {
+    assert.throws(() => validate({ ...scope, filter: { language: 'javascript', expression } }), error =>
+      error.code === 'INVALID_FILTER' && !error.message.includes('SECRET_FILTER_VALUE'));
+  }
+});
+
 test('canonical standalone examples and the grouped filter example match the configuration schema', async () => {
-  for (const name of ['edge', 'filtered', 'chromium-bugs', 'chromium-bug-search', 'github-prs']) {
+  for (const name of ['edge', 'filtered', 'javascript-filter', 'chromium-bugs', 'chromium-bug-search', 'github-prs']) {
     const profile = JSON.parse(await readFile(new URL(`../examples/${name}.profile.json`, import.meta.url), 'utf8'));
     assert.doesNotThrow(() => validate(profile), name);
   }

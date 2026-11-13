@@ -1,10 +1,18 @@
 import { DevDashError } from '../errors.js';
-import { PAGE_SIZE, MAX_PAGES, invalid, object, text, id, array, optionalText, identity, date, boolean, uniquePage } from './shared.js';
+import { mapLimit } from '../concurrency.js';
+import { PAGE_SIZE, MAX_PAGES, invalid, object, text, id, array, optionalText, identity, identityMetadata, date, boolean, uniquePage } from './shared.js';
 
 const BUG_FIELDS = [
   'System.Title', 'System.State', 'System.WorkItemType', 'System.TeamProject',
   'System.CreatedBy', 'System.AssignedTo', 'System.Tags', 'System.CreatedDate', 'System.ChangedDate',
 ];
+const DETAIL_FIELDS = ['Microsoft.VSTS.Common.Severity', 'Microsoft.VSTS.Common.Priority'];
+const WORK_ITEM_FIELDS = [...BUG_FIELDS, ...DETAIL_FIELDS];
+
+function workItemValue(value, label) {
+  if (value == null) return null;
+  return Number.isSafeInteger(value) && value >= 0 ? String(value) : text(value, label);
+}
 
 function azContext(profile) {
   return ['--organization', profile.organization, '--project', profile.project,
@@ -26,6 +34,10 @@ function bugItem(row, profile) {
     labels: tags ? tags.split(';').map(tag => tag.trim()).filter(Boolean) : [],
     createdAt: date(fields['System.CreatedDate']), updatedAt: date(fields['System.ChangedDate']), draft: null,
     providerData: {},
+    type: text(fields['System.WorkItemType'], 'ADO work item type'),
+    ...(Object.hasOwn(fields, DETAIL_FIELDS[0]) ? { severity: workItemValue(fields[DETAIL_FIELDS[0]], 'ADO severity') } : {}),
+    ...(Object.hasOwn(fields, DETAIL_FIELDS[1]) ? { priority: workItemValue(fields[DETAIL_FIELDS[1]], 'ADO priority') } : {}),
+    ...identityMetadata(fields['System.CreatedBy'], [fields['System.AssignedTo']], 'ado'),
   };
 }
 
@@ -33,7 +45,7 @@ function workItemBatch(rows, offset, profile) {
   const batch = rows.slice(offset, offset + 200);
   // The REST count limit does not account for long URLs; use the extension's URL precautions too.
   const url = new URL(`${profile.organization.replace(/\/+$/, '')}/${encodeURIComponent(profile.project)}/_apis/wit/workitems`);
-  url.searchParams.set('fields', ['System.Id', ...BUG_FIELDS].join(','));
+  url.searchParams.set('fields', ['System.Id', ...WORK_ITEM_FIELDS].join(','));
   url.searchParams.set('api-version', '7.1');
   do {
     url.searchParams.set('ids', batch.map(row => row.id).join(','));
@@ -76,30 +88,38 @@ async function bugs(profile, runJson) {
   const rows = result === null ? [] : array(result, 'ADO boards query');
   const seen = new Set();
   uniquePage(rows, seen, row => id(row.id, 'ADO work item ID'));
-  const selected = rows.slice(0, Math.min(profile.limit, 1000));
-  const missing = selected.filter(row => !row.fields || BUG_FIELDS.some(field => !Object.hasOwn(row.fields, field)));
-  const hydrated = new Map();
-  for (let offset = 0; offset < missing.length;) {
-    const batch = workItemBatch(missing, offset, profile);
-    offset += batch.length;
-    // invoke cannot disambiguate duplicate workitems routes on some servers.
-    const query = `SELECT ${['System.Id', ...BUG_FIELDS].map(field => `[${field}]`).join(', ')} FROM WorkItems WHERE [System.TeamProject] = @project AND [System.Id] IN (${batch.map(row => row.id).join(',')})`;
-    const response = await runJson('az', ['boards', 'query', '--wiql', flatWiql({ ...profile, query }),
-      '--query', 'not_null(@, `[]`)', ...azContext(profile)]);
-    const values = response === null ? [] : array(response, 'ADO work item hydration');
-    const expected = new Set(batch.map(row => String(row.id)));
-    for (const row of values) {
-      object(row, 'ADO hydrated work item');
-      const number = id(row.id, 'ADO hydrated work item ID');
-      if (!expected.delete(number)) invalid('ADO hydration returned an unexpected or duplicate work item.');
-      hydrated.set(number, row);
+  const types = (profile.workItemTypes ?? ['Bug']).map(type => type.toLowerCase());
+  const candidates = rows.slice(0, 1000).filter(row => row.fields?.['System.WorkItemType'] == null ||
+    types.includes(text(row.fields['System.WorkItemType'], 'ADO work item type').toLowerCase()));
+  const items = [];
+  let candidateOffset = 0;
+  while (candidateOffset < candidates.length && items.length < profile.limit) {
+    const selected = candidates.slice(candidateOffset, candidateOffset + profile.limit - items.length);
+    candidateOffset += selected.length;
+    const missing = selected.filter(row => !row.fields || BUG_FIELDS.some(field => !Object.hasOwn(row.fields, field)));
+    const hydrated = new Map();
+    for (let offset = 0; offset < missing.length;) {
+      const batch = workItemBatch(missing, offset, profile);
+      offset += batch.length;
+      // invoke cannot disambiguate duplicate workitems routes on some servers.
+      const query = `SELECT ${['System.Id', ...WORK_ITEM_FIELDS].map(field => `[${field}]`).join(', ')} FROM WorkItems WHERE [System.TeamProject] = @project AND [System.Id] IN (${batch.map(row => row.id).join(',')})`;
+      const response = await runJson('az', ['boards', 'query', '--wiql', flatWiql({ ...profile, query }),
+        '--query', 'not_null(@, `[]`)', ...azContext(profile)]);
+      const values = response === null ? [] : array(response, 'ADO work item hydration');
+      const expected = new Set(batch.map(row => String(row.id)));
+      for (const row of values) {
+        object(row, 'ADO hydrated work item');
+        const number = id(row.id, 'ADO hydrated work item ID');
+        if (!expected.delete(number)) invalid('ADO hydration returned an unexpected or duplicate work item.');
+        hydrated.set(number, row);
+      }
+      if (expected.size) invalid('ADO hydration omitted requested work items.');
     }
-    if (expected.size) invalid('ADO hydration omitted requested work items.');
+    items.push(...selected.map(row => hydrated.get(String(row.id)) ?? row)
+      .filter(row => types.includes(text(object(row.fields, 'ADO fields')['System.WorkItemType'], 'ADO work item type').toLowerCase()))
+      .map(row => bugItem(row, profile)));
   }
-  const items = selected.map(row => hydrated.get(String(row.id)) ?? row)
-    .filter(row => text(object(row.fields, 'ADO fields')['System.WorkItemType'], 'ADO work item type').toLowerCase() === 'bug')
-    .map(row => bugItem(row, profile));
-  return { items, truncated: rows.length > profile.limit || rows.length >= 1000 };
+  return { items, truncated: candidateOffset < candidates.length || rows.length >= 1000 };
 }
 
 function prItem(row, profile) {
@@ -107,6 +127,7 @@ function prItem(row, profile) {
   const repository = object(row.repository, 'ADO PR repository');
   const repositoryName = text(repository.name, 'ADO repository name');
   const project = repository.project == null ? profile.project : text(object(repository.project, 'ADO repository project').name, 'ADO project name');
+  if (project.toLowerCase() !== profile.project.toLowerCase()) invalid('ADO returned a PR outside the requested project.');
   return {
     provider: 'ado', kind: 'pr', id: number, title: text(row.title, 'ADO PR title'), state: text(row.status, 'ADO PR status'),
     url: `${profile.organization.replace(/\/+$/, '')}/${encodeURIComponent(project)}/_git/${encodeURIComponent(repositoryName)}/pullrequest/${number}`,
@@ -129,6 +150,7 @@ function prItem(row, profile) {
         })),
       } : {}),
     },
+    ...identityMetadata(row.createdBy, [], 'ado', row.reviewers ?? []),
   };
 }
 
@@ -147,27 +169,71 @@ function branch(value) {
 
 async function prs(profile, runJson) {
   const items = [];
+  const references = new Map();
+  const finish = async truncated => ({
+    items: profile.include
+      ? await mapLimit(items, 4, item => prProperties(item, references.get(item.id), profile, runJson))
+      : items,
+    truncated,
+  });
   const seen = new Set();
-  let skip = 0;
-  for (let page = 0; page <= MAX_PAGES; page++) {
-    const top = Math.min(PAGE_SIZE, profile.limit - items.length + 1);
-    const args = ['repos', 'pr', 'list', '--status', profile.status ?? 'active',
-      '--top', String(top), '--skip', String(skip), ...azContext(profile)];
-    for (const field of ['repository', 'creator', 'reviewer']) {
-      if (profile[field]) args.push(`--${field}`, profile[field]);
+  const selectors = value => Array.isArray(value) ? value : [value];
+  const creators = selectors(profile.creator), reviewers = selectors(profile.reviewer);
+  const requestLimit = MAX_PAGES + creators.length * reviewers.length;
+  let pages = 0;
+  for (const creator of creators) for (const reviewer of reviewers) {
+    let skip = 0;
+    const streamSeen = new Set();
+    for (;;) {
+      if (pages++ >= requestLimit) return finish(true);
+      const top = Math.min(PAGE_SIZE, profile.limit - items.length + 1);
+      const args = ['repos', 'pr', 'list', '--status', profile.status ?? 'active',
+        '--top', String(top), '--skip', String(skip), ...azContext(profile)];
+      for (const [field, value] of Object.entries({ repository: profile.repository, creator, reviewer })) {
+        if (value) args.push(`--${field}`, value);
+      }
+      for (const field of ['sourceBranch', 'targetBranch']) {
+        if (profile[field]) args.push(field === 'sourceBranch' ? '--source-branch' : '--target-branch', profile[field]);
+      }
+      const rows = array(await runJson('az', args), 'ADO PR list');
+      if (rows.length > top) invalid('ADO PR list exceeded the requested page size.');
+      uniquePage(rows, streamSeen, row => id(row.pullRequestId, 'ADO PR ID'));
+      for (const row of rows) {
+        const item = prItem(row, profile);
+        if (seen.has(item.id)) continue;
+        seen.add(item.id);
+        if (items.length === profile.limit) return finish(true);
+        items.push(item);
+        if (profile.include) {
+          const repositoryId = text(row.repository.id, 'ADO PR repository ID');
+          if (profile.repository && ![repositoryId, item.repository].some(name =>
+            name.toLowerCase() === profile.repository.toLowerCase())) invalid('ADO returned a PR outside the requested repository.');
+          references.set(item.id, repositoryId);
+        }
+      }
+      if (rows.length < top) break;
+      skip += rows.length;
     }
-    for (const field of ['sourceBranch', 'targetBranch']) {
-      if (profile[field]) args.push(field === 'sourceBranch' ? '--source-branch' : '--target-branch', profile[field]);
-    }
-    const rows = array(await runJson('az', args), 'ADO PR list');
-    if (rows.length > top) invalid('ADO PR list exceeded the requested page size.');
-    uniquePage(rows, seen, row => id(row.pullRequestId, 'ADO PR ID'));
-    items.push(...rows.slice(0, profile.limit - items.length).map(row => prItem(row, profile)));
-    if (seen.size > profile.limit) return { items, truncated: true };
-    if (rows.length < top) return { items, truncated: false };
-    skip += rows.length;
   }
-  return { items, truncated: true };
+  return finish(false);
+}
+
+async function prProperties(item, repositoryId, profile, runJson) {
+  const names = profile.include.properties;
+  const response = object(await runJson('az', [
+    'devops', 'invoke', '--area', 'git', '--resource', 'pullRequestProperties',
+    '--http-method', 'GET', '--api-version', '7.1',
+    '--route-parameters', `project=${profile.project}`, `repositoryId=${repositoryId}`, `pullRequestId=${item.id}`,
+    '--query-parameters', `keys=${names.join(',')}`, '--organization', profile.organization,
+    '--detect', 'false', '--output', 'json', '--only-show-errors',
+  ]), 'ADO PR properties');
+  const value = object(response.value, 'ADO PR property collection');
+  if (!Number.isSafeInteger(response.count) || response.count !== Object.keys(value).length ||
+      (response.continuation_token != null && response.continuation_token !== '')) {
+    invalid('ADO PR properties returned an incomplete or invalid collection.');
+  }
+  const properties = Object.fromEntries(names.filter(name => Object.hasOwn(value, name)).map(name => [name, value[name]]));
+  return { ...item, providerData: { ...item.providerData, properties } };
 }
 
 export const adoProvider = Object.freeze({

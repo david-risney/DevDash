@@ -74,9 +74,10 @@ export function processFailureDetails(error) {
   const reason = error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' ? 'output-limit'
     : error.killed ? 'timeout'
     : error.code === 'ENOENT' ? 'not-found'
+    : status?.[1] === '403' && /saml|single.sign.on|x-github-sso:\s*required|sso enforcement/i.test(stderr) ? 'sso'
+    : /rate limit|too many requests/i.test(stderr) || status?.[1] === '429' ? 'rate-limit'
     : status?.[1] === '401' || /bad credentials|authentication failed|not logged in|gh auth login|az login|TF400813|VS30063/i.test(stderr) ? 'authentication'
     : status?.[1] === '403' || /access denied|permission denied|not authorized|forbidden/i.test(stderr) ? 'permission'
-    : status?.[1] === '429' || /rate limit|too many requests/i.test(stderr) ? 'rate-limit'
     : /syntax error|invalid (?:query|wiql)|unrecognized arguments|TF51005|TF401232/i.test(stderr) ? 'invalid-query'
     : 'exit';
   return {
@@ -88,6 +89,12 @@ export function processFailureDetails(error) {
     ...(providerCode ? { providerCode } : {}),
     ...(typeof error.signal === 'string' ? { signal: error.signal.toLowerCase() } : {}),
   };
+}
+
+export function githubProcessFailure(error) {
+  if (processFailureDetails(error).reason !== 'sso') return undefined;
+  return new DevDashError('GITHUB_SSO_REQUIRED',
+    'GitHub organization SSO authorization is required for this query account. Authorize its gh application or token through the organization-approved browser flow, then retry. DevDash will not use another account.');
 }
 
 async function resolveWindowsAz(env) {
@@ -152,14 +159,15 @@ export async function runText(command, args, options = {}) {
     return stdout;
   } catch (error) {
     if (error.code === 'LOG_WRITE_FAILED') throw error;
-    const crFailure = command === 'cr' ? chromiumProcessFailure(error) : undefined;
+    const providerFailure = command === 'cr' ? chromiumProcessFailure(error)
+      : command === 'gh' ? githubProcessFailure(error) : undefined;
     await logEvent('process.failed', {
       operation,
       durationMs: Date.now() - started,
       ...processFailureDetails(error),
-      ...(crFailure ? { code: crFailure.code } : {}),
+      ...(providerFailure ? { code: providerFailure.code } : {}),
     });
-    if (crFailure) throw crFailure;
+    if (providerFailure) throw providerFailure;
     if (error instanceof DevDashError) throw error;
     if (error.code === 'ENOENT') {
       throw new DevDashError('CLI_NOT_FOUND', `${command} not found; install it and ensure it is on PATH.`);

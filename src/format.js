@@ -88,7 +88,14 @@ function sections(document) {
       if ((provider !== undefined && (!Object.hasOwn(resources, provider) || !resources[provider].includes(resource))) ||
           (provider === undefined && resource !== undefined)) invalid();
       try {
-        validateQueryResult({ provider, resource, limit: 20_000 }, value);
+        const profile = { provider, resource, limit: 20_000 };
+        // Serialized results do not carry the query's opt-in property names.
+        if (provider === 'ado' && resource === 'prs' &&
+            value.items.some(item => object(item?.providerData) && Object.hasOwn(item.providerData, 'properties'))) {
+          profile.include = { properties: [...new Set(value.items.flatMap(item =>
+            object(item?.providerData?.properties) ? Object.keys(item.providerData.properties) : []))] };
+        }
+        validateQueryResult(profile, value);
         for (const item of value.items) safeUrl(item.url);
       } catch { invalid(); }
       result.push({ ...identity, provider, resource, ...value });

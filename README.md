@@ -5,7 +5,7 @@ pipelines one place to configure developer queries and share cached results.
 
 | Provider | Bugs | Reviews | Transport |
 | --- | --- | --- | --- |
-| GitHub / GitHub Enterprise | Issue search | PR search | Installed `gh` CLI |
+| GitHub / GitHub Enterprise | Issue search | PR search | Installed `gh` CLI by default; explicit anonymous REST mode also supported |
 | Azure DevOps | Flat WIQL or saved query ID | PR list with repository, author, reviewer, status, and source/target branch filters | Installed `az` CLI and `azure-devops` extension |
 | Chromium | Anonymous public bug search or explicit IDs | Public Gerrit CL search | Installed standalone `cr` CLI |
 
@@ -540,15 +540,19 @@ underscores, or hyphens, starting with a letter or digit.
 | `refreshSeconds` | Required on a flat profile or grouped profile; optional override on each grouped query. Cache lifetime in seconds, from 1 to 31,536,000 |
 | `limit` | Optional; maximum provider items fetched before local filtering, default 1,000, range 1-20,000 |
 | `filter` | Optional DevDash substring filter applied to normalized query results before caching |
-| GitHub `repository` | Required `owner/repository` |
+| GitHub `repository` | Optional single `owner/repository`; omit both repository fields to search across all repositories accessible to the selected account |
+| GitHub `repositories` | Optional array of 1-100 unique `owner/repository` names; searches that subset with repeated native `repo:` qualifiers. Cannot be combined with `repository` |
+| GitHub `account` | Optional gh-authenticated login for this query. Omitted means gh's current active account/environment authentication. Does not switch gh's active account; not supported with anonymous auth |
 | GitHub `query` | Search qualifiers; defaults to `state:open`. `bugs` means issues; add `label:bug` if desired |
 | GitHub `hostname` | Optional GitHub Enterprise hostname, without a scheme |
+| GitHub `auth` | `gh` (default) or `anonymous`. Anonymous mode uses credential-free REST and rejects signed-in-user shortcuts such as `@me`; it is never an authentication-failure fallback |
 | ADO `organization`, `project` | Required HTTPS organization URL and project name or ID |
-| ADO bugs `query` | Object containing exactly one of `wiql` (flat WIQL text) or `queryId` (saved query GUID). Only Bug work items are returned |
+| ADO bugs `query` | Object containing exactly one of `wiql` (flat WIQL text) or `queryId` (saved query GUID). Bug work items are returned by default |
+| ADO bugs `workItemTypes` | Optional explicit work-item type names, for example `["Bug", "Task"]`. The default is `["Bug"]`; set this when migrating widgets that intentionally show other types |
 | ADO PR `repository` | Optional name or ID; omitted means project-wide PRs |
 | ADO PR `query` | Object containing optional `author`, `reviewer`, `sourceBranch`, `targetBranch`, and `status`. Empty/omitted means active PRs in the configured scope |
 | ADO PR `query.status` | `active` (default), `completed`, `abandoned`, or `all` |
-| ADO PR `query.author`, `query.reviewer` | Identities accepted by `az repos pr list`; `author` maps to Azure's `--creator` |
+| ADO PR `query.author`, `query.reviewer` | One identity or an array of identities accepted by `az repos pr list`; `author` maps to Azure's `--creator`. Arrays mean OR within each selector, with author/reviewer combinations unioned and deduplicated before the final limit |
 | ADO PR `query.sourceBranch`, `query.targetBranch` | Native branch restrictions passed to `--source-branch` / `--target-branch` |
 | Chromium CL `query` | Required Gerrit search expression; use your email for owner/reviewer |
 | Chromium CL `project` | Optional Gerrit project filter, such as `chromium/src` |
@@ -562,6 +566,58 @@ ambiguous `az devops invoke` work-item routes while preserving the CLI's existin
 authentication. Provider scopes come from query definitions rather than
 the current Git checkout.
 
+### GitHub accounts and repository subsets
+
+Each query can select a different already-authenticated account. DevDash obtains
+that account's credential through `gh auth token --user` and uses a child-process
+environment only; it never runs `gh auth switch`, stores the token, or changes
+the caller's environment. A missing account or mismatched authenticated identity
+is an explicit error, not a fallback to another account. `@me` resolves to the
+selected account. Without `account`, authentication remains owned by gh, including
+its environment-token precedence. Use explicit accounts for stable multi-account
+caches; changing gh's default alone does not invalidate an existing query cache.
+
+```json
+{
+  "refreshSeconds": 300,
+  "queries": {
+    "work-reviews": {
+      "provider": "github",
+      "resource": "prs",
+      "account": "example-work",
+      "query": "is:open review-requested:@me"
+    },
+    "personal-issues": {
+      "provider": "github",
+      "resource": "bugs",
+      "account": "example-personal",
+      "repositories": ["example/project-one", "example/project-two", "example/project-three"],
+      "query": "is:open assignee:@me"
+    }
+  }
+}
+```
+
+Omitting repository fields searches **accessible** repositories, not just
+repositories owned by the account. Use native `user:` or `org:` qualifiers if
+ownership is the desired scope. A subset can also be expressed directly in
+`query`, for example `is:open repo:example/one repo:example/two`; the repeated
+`repo:` qualifiers mean either repository. Native repository qualifiers may narrow
+a configured subset, but cannot select repositories outside it. One query uses one
+account; use separate named queries for multiple accounts. Limits apply across
+the entire query, before local filtering, not independently per repository.
+
+Results retain their actual `repository` and URL. GitHub `id` remains the native
+issue/PR number and can repeat across repositories; consumers should key rows
+by `url` or by provider, repository, and id rather than id alone. Account and
+repository-scope edits invalidate the affected query cache.
+An organization may separately require SSO authorization for each account's
+gh application or token. `GITHUB_SSO_REQUIRED` means that authorization is
+missing for a provider read, even when search itself succeeds. Authorize the
+selected account through the organization's approved browser flow and retry;
+DevDash preserves the last good cache rather than skipping inaccessible PR
+metadata or borrowing another account's credentials.
+
 ### Provider query versus DevDash filter
 
 Each named query has two independent parts. **`query` is provider-specific**:
@@ -572,7 +628,8 @@ search text or explicit IDs.
 Organization, project, repository/host, refresh policy, and limits stay outside
 that query parameter object.
 
-**`filter` is always local DevDash syntax**, never passed to `gh`, `az`, or `cr`:
+**`filter` is always local**, never passed to `gh`, `az`, or `cr`. Use the
+simple string syntax below or opt into JavaScript predicate expressions:
 
 ```json
 {
@@ -628,21 +685,26 @@ camelCase, kebab-case, and underscore spellings are interchangeable:
 
 All providers also expose `id`, `url`, `provider`, `kind`, `draft`, and
 `providerData`. The latter matches extension values, not property names.
+`identities` searches curated identity metadata; `author`, `assignee`, and
+`reviewer` also match available display names, logins, and IDs, not avatar URLs.
 State values keep their provider semantics, rather than forcing ADO/Gerrit
 states into GitHub's enum. Additional fields depend on the provider/resource:
 
 | Provider/resource | Additional filter properties |
 | --- | --- |
-| GitHub | `providerData.nodeId` |
-| ADO PRs | `sourceBranch`, `targetBranch`, `reviewers` (`reviewer`), `providerData.mergeStatus`, `providerData.reviewerVotes` |
-| Chromium CLs | `targetBranch` (`branch`), `providerData.changeId`; `project` aliases `repository` |
+| GitHub | `labelDetails`, `providerData.nodeId`, `providerData.commentCount` |
+| GitHub issues | `providerData.closureReason` |
+| GitHub PRs | `reviewers` (`reviewer`), `providerData.merged`, `providerData.mergedAt`, `providerData.requestedReviewers`, `providerData.requestedTeams` |
+| ADO bugs/work items | `priority`, `severity`, `type` |
+| ADO PRs | `sourceBranch`, `targetBranch`, `reviewers` (`reviewer`), `providerData.mergeStatus`, `providerData.reviewerVotes`; opt-in `providerData.properties` |
+| Chromium CLs | `targetBranch` (`branch`), `providerData.changeId`, `providerData.codeReviewScores`, `providerData.insertions`, `providerData.deletions`, `providerData.unresolvedCommentCount`; `project` aliases `repository` |
 | Chromium bugs | `priority`, `severity`, `type`, `providerData.component` (`component`); legacy `details`, `details.priority`, `details.severity`, `details.type`, and `details.component` filters remain accepted |
 
 ADO `sourceRefName`/`targetRefName` and Gerrit `branch` become shared branch
 concepts; leading `refs/heads/` is removed in normalized results.
-GitHub's search response does **not** supply branches/reviewers, so these are
-not local filter properties there. Use native GitHub `head:`/`base:`/review
-qualifiers in `query` instead. Filters search returned metadata, not full issue
+GitHub PR detail hydration supplies requested reviewers; branches are still not
+local GitHub filter properties. Use native GitHub `head:`/`base:` qualifiers
+in `query` instead. Filters search returned metadata, not full issue
 bodies/comments or arbitrary raw provider fields. Unknown/unavailable
 properties and malformed expressions are `INVALID_FILTER` errors, validated
 before querying or saving configuration.
@@ -655,6 +717,132 @@ that query's cache; CLI, watch, native messaging, and pipeline consumers all
 receive the same filtered lists. Logs record source/match/removed counts but
 never the expression or values. See
 [`examples\filtered.profile.json`](examples/filtered.profile.json).
+
+#### Opt-in ADO PR properties
+
+Property retrieval is separate from both provider-native `query` and local
+`filter`. ADO PR queries can request named properties through the standard
+read-only PR properties API:
+
+```json
+{
+  "include": { "properties": ["ReviewMetadata"] },
+  "filter": {
+    "language": "javascript",
+    "expression": "JSON.parse(item.providerData.properties[params.key].$value).ready === true",
+    "params": { "key": "ReviewMetadata" }
+  }
+}
+```
+
+Only the selected properties are retained under `providerData.properties`,
+with ADO's native `{ "$type": "...", "$value": ... }` scalar envelopes.
+JSON stored in a string property is not decoded automatically. Property
+names, domain schemas, identities, and policy logic belong in your own
+configuration; DevDash contains no team-specific property decoder.
+ANSI, ASCII, and Markdown accept enriched snapshots but omit property payloads
+from their tables; JSON retains the complete selected metadata.
+
+Requests are limited to the bounded, deduplicated PR results, not the extra
+truncation probe, with at most four property reads in flight per query.
+`include.properties` accepts 1–20 unique nonblank names, at most 256 characters
+each, without commas or control characters. Each retained property collection
+is limited to 1 MiB. Without `include`, no extra requests or property data are
+added. Changing `include` invalidates that query's cache.
+
+A successful read with no matching property produces `properties: {}`. That
+is **missing metadata**, not proof of no outstanding obligations: either
+retain the item for triage explicitly or fail when the data is required.
+HTTP, malformed/partial response, and property validation failures fail the
+query and preserve its last good cache. No failed read is converted into an
+empty collection.
+
+#### JavaScript predicate filters
+
+For Boolean logic, comparisons, nested collections, or JSON parsing, use an
+explicit JavaScript filter object. Existing string filters are unchanged.
+
+```json
+{
+  "filter": {
+    "language": "javascript",
+    "expression": "!item.draft && hasText(item.title, params.text) && item.providerData.reviewerVotes.some(v => v.reviewer === params.reviewer && v.vote === 0)",
+    "params": {
+      "text": "cache",
+      "reviewer": "reviewer@example.com"
+    }
+  }
+}
+```
+
+The expression receives `item` (one normalized result), `params` (an optional
+JSON object, default `{}`), `now` (a fixed epoch-millisecond timestamp shared
+by all items in that refresh), and `hasText(value, text)`. Inputs are deeply
+read-only copies; each item gets independent globals and built-ins. Expressions
+must return a primitive `true` or `false` synchronously, not a truthy value,
+Boolean object, or Promise; scheduling asynchronous work is also rejected.
+Statements are not accepted as the top-level filter, but functions and
+immediately invoked functions inside an expression are supported.
+
+JavaScript uses real, case-sensitive field names, **not** the string filter's
+aliases. For example, use `item.author`, not `item.owner`. `hasText` recursively
+searches string/number/Boolean **values**, not keys, using the string filter's
+NFC-normalized, case-insensitive substring semantics; null/missing values do
+not match. For identity-aware author matching, explicitly include the desired
+metadata, such as `hasText([item.author, item.identities?.author?.login,
+item.identities?.author?.displayName, item.identities?.author?.id], params.me)`.
+There is no implicit current-user lookup.
+
+Example predicates:
+
+```javascript
+hasText(item.title, "memory leak") && hasText(item.state, "open")
+item.labels.includes("regression") || item.priority === "P1"
+item.providerData.reviewerVotes.some(v => v.reviewer === params.me && v.vote === 0)
+JSON.parse(item.providerData.metadata).ready === true
+Date.parse(item.updatedAt) >= now - params.maxAgeDays * 86400000
+```
+
+Only fields already returned by the provider are available. Filters do not
+fetch additional data or decode provider-specific extension schemas.
+Missing required fields, malformed JSON, thrown errors, non-Boolean results,
+and resource limits fail the query explicitly and preserve the previous
+cache. Error messages/logs omit source, parameters, item contents, and thrown
+exception text. Syntax is checked before querying or saving configuration.
+JavaScript retains its usual missing-data semantics: `!undefined` is true,
+optional chaining may yield undefined, and `[].every(...)` is true. When
+completeness matters, require the field and validate its shape explicitly;
+DevDash cannot infer whether missing metadata means unknown or known-empty.
+
+Execution uses QuickJS WebAssembly, not Node's `eval` or `vm`. No filesystem,
+network, process/environment, credentials, module loader, provider calls, or
+other host bindings are exposed. A worker enforces a 10-second wall-clock
+deadline, including startup; the interpreter additionally has cooperative
+CPU budgets of 100 ms per item and 5 seconds per batch, a 16 MiB allocation
+limit, and a 512 KiB stack limit. CPU accounting uses the worker thread on
+Node versions that support it, or conservatively the entire process on older
+Node 22. The hard worker deadline also covers engine operations between
+interrupt checks. Limits are fixed, not executable configuration.
+Expressions are limited to 32,768 characters; params to 64 KiB of JSON,
+32 nesting levels and 10,000 values; inputs to 1 MiB per item, 16 MiB and
+20,000 items per query. Limit violations are errors, never partial matches.
+Evaluation errors use `FILTER_FAILED`, invalid results `FILTER_RESULT`, and
+input/time limits `FILTER_LIMIT`; invalid definitions use `INVALID_FILTER`
+or schema validation's `INVALID_CONFIG`.
+
+For Node callers of `devdash/filters`, `compileFilter` stays synchronous.
+Use `await filterItems(items, compileFilter(definition, profile))` for either
+mode: string filters still return arrays synchronously; JavaScript filters
+return a Promise.
+
+Filtering still happens before caching. Relative-time predicates use the
+refresh's `now`, not a new time on each cache read; use `now` rather than
+`Date.now()` when comparing all items to the same instant. Cache-only reads
+never evaluate predicates. Changing the expression or params invalidates
+that query's cache. The same behavior applies to foreground and detached
+refreshes, CLI, watch, pipelines, and native messaging. See
+[`examples\javascript-filter.profile.json`](examples/javascript-filter.profile.json)
+for a complete public profile.
 
 Legacy ADO WIQL strings, top-level saved `queryId`, ADO PR
 `creator`/`reviewer`/`status`, and Chromium `bugIds` remain supported. Do not
@@ -778,7 +966,76 @@ the provider and saves a new snapshot. `refresh` always queries; `--due` skips
 fresh snapshots. `--cached-only` never contacts a provider and explicitly marks
 expired snapshots `stale: true`; a missing or invalidated snapshot is an error.
 
-Grouped queries execute sequentially and independently, with separate caches
+### Adaptive cached reads with background refresh
+
+Opt in when you want cached results immediately while slow or unfamiliar queries
+refresh independently:
+
+```powershell
+.\devdash.ps1 get edge --cache-mode adaptive --format ansi
+devdash get edge --query my-prs --cache-mode adaptive
+devdash get --all --cache-mode adaptive --fast-query-ms 750
+```
+
+| Cache / timing history | Adaptive behavior |
+| --- | --- |
+| Matching cache is younger than `refreshSeconds` | Return it; no provider call or worker |
+| Cache is missing or query configuration changed | Fetch in the foreground, save, then return new data |
+| Cache has expired; speed is unknown or not consistently fast | Return the old snapshot and start a detached background refresh |
+| Cache has expired; recent refreshes are consistently fast | Wait for a foreground refresh and return the new snapshot |
+| A background worker already handles that query | Reuse that worker rather than starting another |
+
+Every successful refresh records its elapsed provider/filter time, including
+refreshes initiated by normal `get`, `refresh`, `watch`, and native messaging.
+The last **five** samples are retained per matching query definition. A query
+is considered fast after at least **three** samples, only when **every retained
+sample is at most 500 ms**. `--fast-query-ms` overrides that threshold for the
+current adaptive read (integer 1–60000). Cache hits do not count as timing
+samples. Old caches without history are treated as unknown speed, not migrated.
+The threshold is a prediction, not a hard foreground deadline: a previously
+fast provider can still take longer on its next request.
+
+Each query's `refreshSeconds` remains the minimum cache age for another refresh;
+adaptive mode does not refresh data that is still fresh. Presentation-only
+changes preserve timing history, while query/filter changes invalidate it with
+the cached results. `cache clear` removes both results and timing history.
+Default `get`, `--cached-only`, forced `refresh`, and `watch` retain their existing
+policies. Adaptive mode is only valid on `get` and cannot be combined with
+`--cached-only`; a fast-query threshold requires adaptive mode.
+
+Adaptive JSON query envelopes add `refreshStatus`: `fresh`, `scheduled`,
+`running`, or `complete`. `fromCache` and `stale` describe the returned snapshot,
+not the eventual background result. Cached output is not printed again when
+the worker finishes; a later read observes the updated cache. The existing
+human-readable formats work unchanged.
+
+The worker inherits the invoking process's environment/provider tools, uses the
+same absolute home/config paths, opens no terminal window, and continues after
+the CLI or native-host client exits. It shares the normal per-query cache lock,
+rechecks freshness before fetching, and refuses to commit results if that query
+changes or its refresh reservation was cleared. Different queries can refresh
+in separate workers; duplicate requests for the same query share a reservation.
+Each worker exits after its one refresh; this does not create an always-running
+daemon or install/authenticate anything.
+
+Background failures preserve the last good cache. They cannot retroactively
+change the cached response's exit code: inspect `cache status`'s
+`backgroundRefresh` (`state`, timestamps, and a sanitized failure `code`) and
+structured diagnostics instead. Status also exposes `refreshTiming.samples`
+and `refreshTiming.maxMs`; timing samples are not added to normal result items.
+An exited worker whose reservation still says `running` appears as `interrupted`
+and a subsequent adaptive read can retry it. Worker startup failures are immediate
+command errors. Foreground provider failures remain errors, without an implicit
+stale fallback.
+
+```powershell
+devdash cache status edge --query my-prs
+devdash logs tail --errors
+```
+
+### Scheduling and concurrency
+
+Foreground grouped queries execute sequentially and independently, with separate caches
 and expiry times. Successful queries persist even when another fails; failed
 queries preserve their last good snapshot but never silently return it as a
 successful refresh. `--cached-only` reports `CACHEMISS` separately for each
@@ -790,7 +1047,8 @@ changing or deleting the current query prevents its old result being committed.
 It requires a grouped profile and cannot be combined with `--all` or a flat
 profile. Without a selector, cache status/clear cover all queries in the profile.
 
-There is **no hidden background daemon**. Expiry alone does not launch a query.
+There is **no hidden background daemon**. Expiry alone does not launch a query;
+an adaptive read explicitly starts a one-shot worker when needed.
 For automatic refresh, have a scheduler invoke `refresh --all --due`, or run:
 
 ```powershell
@@ -966,26 +1224,41 @@ semantics; missing timestamps/author/repository/draft are `null`, and missing
 assignees/labels are empty arrays. Timestamps are UTC ISO 8601. ADO PRs do not
 expose a general modification time, so `updatedAt` is `null`. Raw provider
 responses and credentials are not included.
+`bug` is the shared issue/work-item category; use `type` for an ADO work item's
+literal type when explicitly querying non-Bug work items.
 
 ADO PR results can additionally include `sourceBranch`, `targetBranch`, and
-`reviewers`; Chromium CLs can include `targetBranch`. Optional branch metadata
+`reviewers`; GitHub PRs can include `reviewers`, and Chromium CLs can include
+`targetBranch`. Optional branch metadata
 is omitted when the provider did not return the field, or `null` when explicitly
 absent. These fields use the same names understood by the local filter.
 
 Every item has a **`providerData` object**, empty when no curated extensions
 are available. Shared concepts stay at the top level, even if only one
-provider currently supplies them: Chromium bugs expose `priority`, `severity`,
-and `type` as nullable strings rather than hiding them in `details`. Other
+provider currently supplies them: Chromium bugs and ADO work items expose
+`priority`, `severity`, and `type` rather than hiding them in `details`. Other
 adapters omit unsupported fields; they do not invent values. Priority,
 severity, type, state, and identity values retain provider-native semantics.
 
 | Provider/resource | Curated `providerData` fields |
 | --- | --- |
-| GitHub bugs/PRs | `nodeId`: GitHub's opaque GraphQL node ID, when supplied |
+| GitHub bugs/PRs | `nodeId`: opaque GraphQL node ID; `commentCount`: nonnegative count when supplied |
+| GitHub issues | `closureReason`: nullable native reason, such as `completed` or `not_planned` |
+| GitHub PRs | `merged`: boolean; nullable `mergedAt`; `requestedReviewers` and `requestedTeams`: string arrays when supplied |
 | ADO bugs | None yet (`{}`) |
-| ADO PRs | `mergeStatus`: nullable native merge status; `reviewerVotes`: array of `{ reviewer, vote, required }` when reviewers were supplied |
+| ADO PRs | `mergeStatus`: nullable native merge status; `reviewerVotes`: array of `{ reviewer, vote, required }` when reviewers were supplied; opt-in `properties`: selected native typed property envelopes |
 | Chromium bugs | `component`: nullable Issue Tracker component string |
-| Chromium CLs | `changeId`: stable Gerrit Change-Id, when supplied |
+| Chromium CLs | `changeId`; `codeReviewScores`: array of `{reviewer, score}` with scores from -2 to 2; nonnegative `insertions`, `deletions`, and `unresolvedCommentCount` when supplied |
+
+Optional `identities` preserves display metadata without changing existing
+`author`, `assignees`, or `reviewers` strings:
+`{author?: Identity, assignees?: Identity[], reviewers?: Identity[]}`, where each
+identity has optional nonempty `id`, `login`, `displayName`, and HTTPS `avatarUrl`
+strings. Missing source values are omitted; no token or embedded image is
+included. GitHub `labelDetails` preserves `{name, color}` with a validated
+`#rrggbb` color while keeping `labels` as strings. GitHub PRs hydrate missing
+detail data with bounded concurrency, within the search API's 1,000-result
+ceiling. Gerrit requests detailed label/account metadata but remains anonymous.
 
 ADO reviewer identities use the same normalization as top-level `reviewers`.
 Votes are native `-10`, `-5`, `0`, `5`, or `10`, or `null` when not supplied;
@@ -1152,8 +1425,60 @@ plugin's exact extension ID and add `"nativeMessaging"` to the plugin's
 Manifest V3 permissions. Requests must originate from an extension page or
 service worker, not directly from a content script.
 
-On Windows, from this checkout, generate a manifest and register it **only when
-you are ready to connect your plugin** (replace the extension ID):
+On Windows, the CLI prepares a per-user launcher with an absolute
+Node path, checkout-local `cr` discovery, and optional fixed home/config paths.
+It registers only exact extension IDs for the selected browsers. Preview
+the plan without changing files, dependencies, or the registry:
+
+```powershell
+devdash native install --browser both --extension-id aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --preview
+# Replace the example ID with your plugin's actual ID before installing.
+devdash native install --browser both --extension-id aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+devdash native status
+devdash native extensions list
+devdash native extensions add bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+devdash native extensions remove bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+```
+
+Installation requires the full source checkout, including its workspace and
+lockfile; the published npm package alone is not a native-host installation
+source. `--extension-id` also accepts comma-separated IDs when development and
+published extension IDs must both be allowed. `--install-directory` selects the generated
+host files; its default is `%LOCALAPPDATA%\DevDash\NativeMessaging`.
+
+`--home` and `--config` select trusted local paths at installation time; native
+messages cannot override them. Installation requires Node 22 or later and
+bootstraps missing checkout dependencies using `npm ci`; setup diagnostics go
+to stderr. It does not install provider CLIs/browser binaries or authenticate.
+Run `devdash doctor` or native `health` to check provider tools. Keep the
+checkout at the registered path and rerun setup after moving it. Nothing is
+registered automatically by `npm install`. To unregister:
+
+```powershell
+devdash native uninstall --browser both
+```
+
+All administration commands are **local CLI-only**; browser messages cannot
+install hosts, edit the extension allowlist, or override launcher settings.
+They use per-user HKCU registration for Chrome/Edge; no elevation is needed.
+The host manifest has one shared `allowed_origins` list for both registered
+browsers, using exact IDs with no wildcards. Install preserves existing IDs;
+add/remove updates one ID without discarding the others. Installing with no
+IDs or removing the final ID leaves an empty allowlist, allowing no extensions.
+Development and store versions may have different IDs. Every allowed extension
+can access the exposed DevDash protocol; the allowlist is not a per-profile ACL.
+
+`native status` reports browser registrations and launcher health. List/status
+and `--preview` do not write setup files or diagnostic logs. Mutations are
+serialized, reject foreign registrations/unrecognized files, and restore prior
+files and registration values if setup fails. A browser-specific uninstall
+retains shared files while the other browser still references them. Use the same
+`--install-directory` when managing a nondefault installation. The existing
+`scripts\install-native-host.ps1` is now a thin compatibility wrapper around
+these CLI commands; it no longer implements registry operations.
+
+For manual registration, generate a manifest and register it **only when you
+are ready to connect your plugin** (replace the extension ID):
 
 ```powershell
 $extensionId = 'REPLACE-WITH-YOUR-32-CHARACTER-EXTENSION-ID'
@@ -1169,10 +1494,10 @@ reg.exe ADD 'HKCU\Software\Microsoft\Edge\NativeMessagingHosts\com.devdash.cli' 
 reg.exe ADD 'HKCU\Software\Google\Chrome\NativeMessagingHosts\com.devdash.cli' /ve /t REG_SZ /d $manifest /f
 ```
 
-The Windows launcher uses Node from PATH and ignores browser-supplied origin/
-window arguments. If Node is not on the browser's inherited PATH, use a launcher
-with an absolute Node path. Provider CLIs (`gh`, `az`, and `cr`) must also be
-available on the browser's inherited PATH for uncached queries.
+The manual checkout launcher uses Node from PATH and ignores browser-supplied
+origin/window arguments. Prefer the installer if Node is not on the browser's
+inherited PATH. The launcher includes checkout-local `cr` on PATH; other provider
+CLIs must be available to the native host for uncached queries.
 Keep the checkout/package at the registered path.
 To use a custom data directory, set a persistent `DEVDASH_HOME` before launching
 the browser, or set it in your launcher. Nothing is registered by `npm install`
@@ -1196,10 +1521,18 @@ async function getDevDash(profile) {
 }
 ```
 
-Native requests are JSON objects with `command` equal to `profiles`, `get`,
-`refresh`, `status`, `profile-set`, or `profile-remove`.
+Native requests are JSON objects. `hello` reports the application version,
+capabilities, result fields, and transport limits without querying any provider.
+`health` runs the CLI's dependency checks (`doctor`), not authentication or
+interactive login. The existing commands remain backward compatible:
+`profiles`, `get`, `refresh`, `status`, `profile-set`, and `profile-remove`.
+Optional `profile`/`query` on `health` checks only selected query dependencies
+(`devdash doctor dashboard --query bugs` in the CLI). Anonymous GitHub queries
+do not require `gh`; the unscoped health check still inventories every tool.
 Query commands accept `profile` **or** `all: true`;
-`get` also accepts `cachedOnly: true`, and `refresh` accepts `due: true`.
+`get` also accepts `cachedOnly: true`, or `cacheMode: "adaptive"` with optional
+`fastQueryMs` (default 500), and `refresh` accepts `due: true`.
+Adaptive mode and `cachedOnly` are mutually exclusive.
 For `get`, `refresh`, and `status`, an optional `query` string selects one named
 query when `profile` is supplied; it cannot be used with `all: true` or a flat
 profile. For example, send:
@@ -1216,6 +1549,12 @@ Consume each list from `result.queries['bugs'].items`,
 { "command": "get", "profile": "edge", "query": "my-prs", "cachedOnly": true }
 ```
 
+For an adaptive read that can refresh after the native connection closes:
+
+```json
+{ "command": "get", "profile": "edge", "query": "my-prs", "cacheMode": "adaptive", "fastQueryMs": 500 }
+```
+
 Responses have the same JSON shape as CLI results; check `failed` on grouped
 profiles as well as batches, and each query's `error` before consuming it.
 To configure a shared query from the plugin, send
@@ -1229,9 +1568,134 @@ access, changing data paths, or launching arbitrary commands.
 
 The protocol is UTF-8 JSON with a native-endian 32-bit length prefix. Incoming
 and outgoing messages are bounded to 1 MiB; oversized results produce a
-`MESSAGE_TOO_LARGE` error. Reduce query `limit` values or request grouped queries
-individually if needed. Both one-shot `sendNativeMessage` and persistent
-`connectNative` connections are supported.
+`MESSAGE_TOO_LARGE` error. Use `pageSize`/`fields` or select one query when
+needed. Both one-shot `sendNativeMessage` and persistent `connectNative`
+connections are supported.
+
+#### Browser consumer contract
+
+DevDash owns provider queries, authentication, and cache freshness. The
+extension owns widget layout, sorting, display counts, and other presentation
+preferences. Store a profile/query reference in each widget instead of a
+second copy of its provider query or credentials. An optional browser snapshot
+is only the last rendered view, not a second cache freshness policy. A widget
+refresh interval of zero can disable the extension's automatic reads; do not
+translate it to a zero `refreshSeconds` (cache lifetimes remain positive).
+
+**No eventing or subscriptions are required or provided.** Read on page load
+and at the extension's normal refresh interval. An adaptive read may return
+cached data while the worker updates it; consume the new snapshot on the next
+read. For long cold loads, start a detached job instead of holding a native
+request open:
+
+```json
+{ "command": "refresh-start", "profile": "dashboard", "query": "bugs", "due": true }
+```
+
+For strictly non-blocking widget reads, combine `get` with `cachedOnly: true`
+and `refresh-start` with `due: true`; timing-based adaptive reads are a latency
+heuristic, not a hard foreground deadline.
+
+The response contains `jobId`, `refreshStatus`, and cache status, not an empty
+success-shaped result list. `due: true` skips fresh snapshots; omit it for a
+manual forced reload. Read `status` for that profile/query when needed;
+`backgroundRefresh` includes its `id`, state, timestamps, and a sanitized error
+code on failure. States include `running`, `complete`, `failed`, and
+`interrupted`. Check the job ID if another caller may have started newer work.
+Then read `get` with `cachedOnly: true` to display the completed snapshot.
+Provider errors preserve the last good cache. A job survives closing the native
+connection; it does not depend on keeping a browser service worker alive.
+
+`get` and `status` expose a `cacheRevision` for detecting snapshot changes.
+Each provider has two cross-process query slots per configuration; grouped
+reads preserve configured query order but run up to three independent queries
+at a time. Excess provider work waits up to two minutes for a slot, then reports
+`BUSY`. Per-query cache locks still deduplicate matching reads.
+
+#### Safe named-query editing
+
+Use the query operations for shared groups; replacing an entire group with
+`profile-set` is unnecessary and can overwrite another consumer's definitions.
+
+| Native command | Fields in addition to `command` |
+| --- | --- |
+| `query-get` | `profile`, `query` |
+| `query-validate` | `profile`, `query`, `definition` |
+| `query-set` | `profile`, `query`, `definition`, `expectedRevision` |
+| `query-remove` | `profile`, `query`, `expectedRevision` |
+
+`query-get` returns the saved `definition`, the inherited `effectiveDefinition`,
+and its `revision`. Validation performs no save or provider request. Save with
+that revision; use `"missing"` only when creating a query. Revisions cover the
+target query and inherited defaults, but sibling edits do not conflict.
+`REVISION_CONFLICT` requires rereading before another save, not an automatic
+last-writer-wins retry. Existing standalone profiles are not implicitly converted.
+The first query in a new group must include an explicit `refreshSeconds`.
+Removing the final query also removes the now-empty group and its query cache.
+
+CLI equivalents:
+
+```powershell
+devdash query validate dashboard bugs --file .\query.json
+devdash query set dashboard bugs --file .\query.json --expected-revision missing
+devdash query get dashboard bugs
+# Use the returned revision for a later set/remove.
+```
+
+#### Paged reads, avatars, and request correlation
+
+For one flat profile or selected named query, use a `pageSize` from 1 to 200
+(default 50 when paging/projection is requested) and optional `fields`:
+
+```json
+{ "command": "get", "profile": "dashboard", "query": "bugs", "cachedOnly": true, "pageSize": 50, "fields": ["title", "state", "identities", "providerData"] }
+```
+
+`provider`, `kind`, `id`, and `url` are always retained. The response includes
+`page.offset`, `page.size`, `page.total`, and `page.nextCursor`. Continue using
+that cursor with the same profile/query, page size, and field projection.
+Continuation reads are cache-only even if the request specifies another cache
+policy; a cleared, invalidated, or replaced snapshot reports `CURSOR_EXPIRED`.
+Restart without a cursor instead of mixing pages from different snapshots.
+`page.total` counts cached matches; `truncated` still describes the provider
+fetch limit, not whether another cached page exists. Pages shrink as needed
+to stay within 768 KiB. A single oversized item requires a narrower projection.
+CLI: `devdash get dashboard --query bugs --page-size 50 --fields title,state`.
+
+Images are not embedded in each result row. Retrieve one identity avatar from
+the current cache with:
+
+```json
+{ "command": "avatar", "profile": "dashboard", "query": "bugs", "itemId": "123", "role": "author" }
+```
+
+Roles are `author` (default), `assignee`, and `reviewer`; `index` selects an
+assignee/reviewer, and optional `cacheRevision` protects against a changed
+snapshot. The bridge accepts no caller-supplied image URL. Destinations must
+match the selected provider scope; redirects, SVG, and images over 128 KiB
+are rejected. Successful responses contain a raster `dataUrl`, `mimeType`,
+and `fromCache`. Avatars are cached separately for six hours. ADO credentials
+are obtained internally from the existing Azure CLI session or
+`AZURE_DEVOPS_EXT_PAT`; neither credentials nor authenticated headers are sent
+to the extension or persisted in avatar caches. Errors remain explicit so the
+extension can show initials and its normal error details.
+GitHub-origin avatars can use the existing `gh` credential internally; public
+`avatars.githubusercontent.com` images never receive that credential.
+For overlapping GitHub issue/PR numbers, include `"repository": "example/project"`
+in the avatar request (CLI: `--repository example/project`). An ambiguous id alone
+fails rather than selecting another repository's item. GitHub-origin avatar
+credentials and avatar caches also respect the query's selected account.
+
+On a persistent connection, optionally attach a unique ASCII `id` (1-80
+letters/digits, `.`, `_`, `:`, or `-`) to each request. Responses are then
+`{ "id": "...", "result": { ... } }` or `{ "id": "...", "error": { ... } }`.
+Up to four correlated requests run concurrently and may reply out of order,
+so a slow refresh does not block unrelated status/cache reads. Requests without
+IDs retain the original sequential, unwrapped response shape. These are
+request/reply messages only, never unsolicited events.
+
+The richer provider contract uses a new cache fingerprint. Existing snapshots
+are cache misses until refreshed; caches are not silently migrated or edited.
 
 ## Development
 

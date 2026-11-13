@@ -21,7 +21,7 @@ test('Gerrit strips XSSI, normalizes nanosecond UTC timestamps and web URLs', as
     fetch: async (url, options) => { calls.push({ url, options }); return http([cl(1)]); },
   });
   assert.equal(result.truncated, false);
-  assert.deepEqual(Object.keys(result.items[0]), normalizedKeys);
+  assert.deepEqual(Object.keys(result.items[0]), [...normalizedKeys, 'identities']);
   assert.equal(result.items[0].url, 'https://chromium-review.googlesource.com/c/chromium/src/+/1');
   assert.equal(result.items[0].author, 'owner@example.com');
   assert.equal(result.items[0].createdAt, '2026-10-06T19:00:00.123Z');
@@ -30,6 +30,7 @@ test('Gerrit strips XSSI, normalizes nanosecond UTC timestamps and web URLs', as
   assert.deepEqual(result.items[0].labels, ['tag']);
   assert.equal(calls[0].url.searchParams.get('q'), 'status:open project:"chromium/src"');
   assert.equal(calls[0].url.searchParams.get('o'), 'DETAILED_ACCOUNTS');
+  assert.deepEqual(calls[0].url.searchParams.getAll('o'), ['DETAILED_ACCOUNTS', 'DETAILED_LABELS']);
   assert.equal(calls[0].url.searchParams.get('S'), '0');
   assert.equal(calls[0].url.searchParams.get('n'), '100');
   assert.ok(calls[0].options.signal instanceof AbortSignal);
@@ -59,6 +60,37 @@ test('Gerrit providerData curates the stable change ID without exposing raw meta
   }
 });
 
+test('Gerrit curates Code-Review scores, counts and detailed owner identity anonymously', async () => {
+  const result = await queryGerrit(profile, {
+    fetch: async (url, options) => {
+      assert.equal(url.pathname, '/changes/');
+      assert.equal(options.headers.Authorization, undefined);
+      assert.deepEqual(url.searchParams.getAll('o'), ['DETAILED_ACCOUNTS', 'DETAILED_LABELS']);
+      return http([{ ...cl(1), owner: { _account_id: 123, name: 'Owner', email: 'owner@example.com', username: 'owner', token: 'PRIVATE' },
+        insertions: 12, deletions: 0, unresolved_comment_count: 3,
+        labels: { 'Code-Review': { all: [{ _account_id: 456, email: 'reviewer@example.com', value: 2 },
+          { _account_id: 789, value: -1 }, { name: 'Neutral' }] }, Verified: { all: [{ value: 1 }] } },
+      }]);
+    },
+  });
+  assert.equal(result.items[0].author, 'owner@example.com');
+  assert.deepEqual(result.items[0].identities.author,
+    { id: '123', login: 'owner', displayName: 'Owner' });
+  assert.deepEqual(result.items[0].providerData, {
+    insertions: 12, deletions: 0, unresolvedCommentCount: 3,
+    codeReviewScores: [{ reviewer: 'reviewer@example.com', score: 2 }, { reviewer: '789', score: -1 },
+      { reviewer: 'Neutral', score: 0 }],
+  });
+  assert.doesNotMatch(JSON.stringify(result), /PRIVATE|Verified|_account_id|unresolved_comment_count/);
+  for (const patch of [
+    { insertions: -1 }, { deletions: '0' }, { unresolved_comment_count: null },
+    { labels: [] }, { labels: { 'Code-Review': { all: {} } } }, { labels: { 'Code-Review': { all: null } } },
+    { labels: { 'Code-Review': { all: [{ value: 3 }] } } },
+    { labels: { 'Code-Review': { all: [{ value: '2' }] } } },
+    { owner: { _account_id: 0 } }, { owner: { name: [] } },
+  ]) await assert.rejects(queryGerrit(profile, { fetch: async () => http([{ ...cl(1), ...patch }]) }),
+    { code: 'PROVIDER_RESPONSE' });
+});
 test('Gerrit exact limit uses _more_changes for truthful truncation', async () => {
   for (const more of [true, false]) {
     const result = await queryGerrit({ ...profile, limit: 1 }, {
@@ -99,6 +131,12 @@ test('Optional absent metadata stays null or empty and dates convert offsets to 
   assert.equal(result.items[0].draft, false);
   assert.deepEqual(result.items[0].labels, []);
   assert.deepEqual(result.items[0].assignees, ['123']);
+  const legacy = await queryGerrit(profile, {
+    fetch: async () => http([{ ...cl(1), owner: 'owner@example.com', assignee: 'assignee@example.com' }]),
+  });
+  assert.equal(legacy.items[0].author, 'owner@example.com');
+  assert.deepEqual(legacy.items[0].assignees, ['assignee@example.com']);
+  assert.equal(Object.hasOwn(legacy.items[0], 'identities'), false);
 });
 
 test('Gerrit pagination rejects repeats rather than looping', async () => {

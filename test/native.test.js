@@ -34,6 +34,10 @@ test('native messaging supports split frames, multiple requests, and UTF-8 paylo
 test('native command allowlist cannot execute arbitrary commands or override storage', async () => {
   for (const request of [
     { command: 'profile set' },
+    { command: 'native', action: 'install' },
+    { command: 'native extensions add', extensionId: 'a'.repeat(32) },
+    { command: 'native-install' },
+    { command: 'native-status' },
     { command: 'get', profile: '--home', home: 'other' },
     { command: 'get', profile: '--all' },
     { command: 'get', all: 'true' },
@@ -43,9 +47,18 @@ test('native command allowlist cannot execute arbitrary commands or override sto
     { command: 'get', all: true, query: 'bugs' },
     { command: 'get', query: 'bugs' },
     { command: 'profiles', all: true },
+    { command: 'get', profile: 'bugs', cacheMode: 'unknown' },
+    { command: 'get', profile: 'bugs', cacheMode: 'adaptive', cachedOnly: true },
+    { command: 'get', profile: 'bugs', cacheMode: 'adaptive', fastQueryMs: '500' },
+    { command: 'get', profile: 'bugs', cacheMode: 'adaptive', fastQueryMs: 0 },
+    { command: 'get', profile: 'bugs', cacheMode: 'adaptive', fastQueryMs: 60001 },
+    { command: 'get', profile: 'bugs', fastQueryMs: 500 },
+    { command: 'refresh', profile: 'bugs', cacheMode: 'adaptive' },
     { command: 'profile-set', profile: 'bugs', file: 'arbitrary-path' },
     { command: 'profile-set', profile: 'bugs', definition: null },
     { command: 'profile-remove' },
+    { command: 'avatar', profile: 'bugs', itemId: '1', repository: [] },
+    { command: 'avatar', profile: 'bugs', itemId: '1', repository: '--home' },
     { command: ['get'], profile: 'bugs' },
     null,
     [],
@@ -89,6 +102,7 @@ test('valid native query flags are forwarded as fixed argument strings', async (
     frameMessage({ command: 'get', profile: 'bugs', cachedOnly: true }),
     frameMessage({ command: 'status', all: true }),
     frameMessage({ command: 'get', profile: 'edge', query: 'my-prs', cachedOnly: true }),
+    frameMessage({ command: 'get', profile: 'edge', query: 'my-prs', cacheMode: 'adaptive', fastQueryMs: 750 }),
   ], {
     executeCommand: async (args) => { calls.push(args); return { output: {} }; },
   });
@@ -97,6 +111,7 @@ test('valid native query flags are forwarded as fixed argument strings', async (
     ['get', 'bugs', '--cached-only'],
     ['cache', 'status', '--all'],
     ['get', 'edge', '--cached-only', '--query', 'my-prs'],
+    ['get', 'edge', '--query', 'my-prs', '--cache-mode', 'adaptive', '--fast-query-ms', '750'],
   ]);
 });
 

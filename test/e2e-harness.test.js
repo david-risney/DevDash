@@ -9,12 +9,22 @@ import { fileURLToPath } from 'node:url';
 import { DevDash } from '../src/service.js';
 import { executeCommand } from '../src/commands.js';
 import { DevDashError } from '../src/errors.js';
-import { preflight, readLiveConfig, runLiveSuite, safeFailure } from './helpers/live-e2e.js';
+import { preflight, readLiveConfig, runLiveSuite, safeFailure, safeCliFailure } from './helpers/live-e2e.js';
 import { createTestProvider, testItem } from './helpers/test-provider.js';
 
 const execute = promisify(execFile);
 const base = { provider: 'github', resource: 'bugs', repository: 'example/repo', refreshSeconds: 60, limit: 2 };
 const config = { version: 1, profiles: { privateName: base } };
+
+test('live CLI errors retain only allowlisted codes from grouped stdout without leaking private results', () => {
+  const grouped = JSON.stringify({ queries: {
+    privateQuery: { items: [{ title: 'SECRET_RESULT' }] },
+    blocked: { error: { code: 'GITHUB_SSO_REQUIRED', message: 'SECRET_AUTH_URL' } },
+  } });
+  assert.equal(safeCliFailure(grouped, ''), 'GITHUB_SSO_REQUIRED');
+  for (const text of ['SECRET_RESULT', 'null', '[]', '{}', JSON.stringify({ error: { code: 'SECRET_RESULT' } }),
+    'x'.repeat(1024 * 1024 + 1)]) assert.equal(safeCliFailure(text, text), 'PROVIDER_FAILURE');
+});
 
 async function fixture(t) {
   const home = await mkdtemp(join(tmpdir(), 'devdash-e2e-harness-'));
@@ -73,7 +83,7 @@ test('opt-in harness traverses grouped service/filter/cache/native contracts wit
     version: 1,
     profiles: {
       PRIVATE_PROFILE: { refreshSeconds: 300, queries: {
-        PRIVATE_QUERY: { ...base, filter: 'title:cache' },
+        PRIVATE_QUERY: { ...base, filter: { language: 'javascript', expression: 'hasText(item.title, params.text)', params: { text: 'cache' } } },
       } },
     },
   };
@@ -117,6 +127,26 @@ test('live harness removes temporary credentials/results after prerequisite or r
     },
   }), error => error.code === 'E2E_CONTRACT' && !error.message.includes('PRIVATE_CONTENT'));
   await assert.rejects(stat(scratch), { code: 'ENOENT' });
+});
+
+test('live harness exercises enriched ADO snapshot presentation as well as cached JSON', async () => {
+  const provider = createTestProvider({ provider: 'ado', responses: [{
+    items: [testItem({ provider: 'ado', kind: 'pr', providerData: {
+      properties: { ReviewMetadata: { $type: 'System.String', $value: '{"ready":true}' } },
+    } })], truncated: false,
+  }] });
+  const service = env => new DevDash({ home: env.DEVDASH_HOME }, { queryProfile: provider.queryProfile });
+  const report = await runLiveSuite({ version: 1, profiles: { reviews: {
+    provider: 'ado', resource: 'prs', organization: 'https://dev.azure.com/example', project: 'Project',
+    refreshSeconds: 300, limit: 1, include: { properties: ['ReviewMetadata'] },
+  } } }, {
+    runProvider: async () => ({ id: 'synthetic-project' }),
+    command: async (args, env) => (await executeCommand(args, { service: service(env) })).output,
+    native: async (request, env) => service(env).get(request.profile, { cachedOnly: request.cachedOnly }),
+  });
+  assert.equal(report.queries, 1);
+  assert.equal(report.failed, 0);
+  assert.equal(provider.calls.length, 1);
 });
 
 test('E2E launcher requires an explicit valid configuration before any real provider requests', async () => {

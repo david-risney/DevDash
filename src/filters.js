@@ -1,4 +1,5 @@
 import { DevDashError } from './errors.js';
+import { compileJavaScriptFilter, filterJavaScriptItems } from './javascript-filter.js';
 
 const common = [
   ['provider'], ['kind'], ['id'], ['title', 'subject'], ['state', 'status'], ['url'],
@@ -17,8 +18,17 @@ export function filterProperties(profile) {
   }
   const properties = common.map(([name, ...aliases]) => ({ name, aliases, path: name }));
   properties.push({ name: 'providerData', aliases: [], path: 'providerData' });
+  properties.push({ name: 'identities', aliases: [], path: 'identities' });
+  if (profile.provider === 'ado' && profile.resource === 'bugs') {
+    for (const name of ['priority', 'severity', 'type']) properties.push({ name, aliases: [], path: name });
+  }
   if (profile.provider === 'github') {
-    properties.push({ name: 'providerData.nodeId', aliases: [], path: 'providerData.nodeId' });
+    for (const name of ['nodeId', 'commentCount', ...(profile.resource === 'bugs' ? ['closureReason']
+      : ['merged', 'mergedAt', 'requestedReviewers', 'requestedTeams'])]) {
+      properties.push({ name: `providerData.${name}`, aliases: [], path: `providerData.${name}` });
+    }
+    properties.push({ name: 'labelDetails', aliases: [], path: 'labelDetails' });
+    if (profile.resource === 'prs') properties.push({ name: 'reviewers', aliases: ['reviewer'], path: 'reviewers' });
   }
   if (profile.provider === 'ado' && profile.resource === 'prs') {
     properties.push(
@@ -28,11 +38,17 @@ export function filterProperties(profile) {
       { name: 'providerData.mergeStatus', aliases: [], path: 'providerData.mergeStatus' },
       { name: 'providerData.reviewerVotes', aliases: [], path: 'providerData.reviewerVotes' },
     );
+    if (profile.include?.properties) {
+      properties.push({ name: 'providerData.properties', aliases: [], path: 'providerData.properties' });
+    }
   }
   if (profile.provider === 'chromium' && profile.resource === 'cls') {
     properties.find(property => property.name === 'repository').aliases.push('project');
     properties.push({ name: 'targetBranch', aliases: ['branch'], path: 'targetBranch' });
     properties.push({ name: 'providerData.changeId', aliases: [], path: 'providerData.changeId' });
+    for (const name of ['codeReviewScores', 'insertions', 'deletions', 'unresolvedCommentCount']) {
+      properties.push({ name: `providerData.${name}`, aliases: [], path: `providerData.${name}` });
+    }
   }
   if (profile.provider === 'chromium' && profile.resource === 'bugs') {
     properties.push({ name: 'details', aliases: [], path: 'legacyDetails' });
@@ -45,6 +61,9 @@ export function filterProperties(profile) {
 }
 
 export function compileFilter(expression, profile) {
+  if (expression && typeof expression === 'object' && !Array.isArray(expression)) {
+    return compileJavaScriptFilter(expression);
+  }
   if (expression === undefined) return [];
   if (typeof expression !== 'string' || expression.length > 32768 ||
       /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(expression)) {
@@ -115,6 +134,11 @@ function propertyValue(item, path) {
   if (path === 'legacyDetails') {
     return { priority: item.priority, severity: item.severity, type: item.type, component: item.providerData?.component };
   }
+  if (['author', 'assignees', 'reviewers'].includes(path) && item.identities) {
+    const identities = item.identities[path];
+    return [item[path], (Array.isArray(identities) ? identities : [identities])
+      .map(identity => [identity?.id, identity?.login, identity?.displayName])];
+  }
   let value = item;
   for (const name of path.split('.')) {
     if (!value || typeof value !== 'object' || !Object.hasOwn(value, name)) return undefined;
@@ -123,7 +147,8 @@ function propertyValue(item, path) {
   return value;
 }
 
-export function filterItems(items, terms) {
+export function filterItems(items, terms, options) {
+  if (terms.language === 'javascript') return filterJavaScriptItems(items, terms, options);
   if (!terms.length) return items;
   return items.filter(item => {
     const fields = new Map();

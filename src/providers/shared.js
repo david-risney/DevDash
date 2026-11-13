@@ -68,3 +68,45 @@ export function uniquePage(rows, seen, getId) {
     seen.add(key);
   }
 }
+
+export function httpsReference(value, context) {
+  text(value, context);
+  let url;
+  try { url = new URL(value); } catch { invalid(`${context}: expected an HTTPS reference.`); }
+  if (url.protocol !== 'https:' || url.username || url.password) invalid(`${context}: expected an HTTPS reference.`);
+  return value;
+}
+
+// Keep display metadata separate from the stable strings used by filters and callers.
+export function identityDetails(value, provider) {
+  if (value == null || typeof value === 'string') return null;
+  object(value, 'Identity');
+  const fields = provider === 'ado'
+    ? { id: 'id', uniqueName: 'login', displayName: 'displayName', imageUrl: 'avatarUrl' }
+    : { id: 'id', login: 'login', name: 'displayName', avatar_url: 'avatarUrl' };
+  const result = {};
+  for (const [source, target] of Object.entries(fields)) {
+    if (value[source] == null) continue;
+    result[target] = target === 'avatarUrl' ? httpsReference(value[source], 'Identity avatar')
+      : target === 'id' && provider === 'github' ? id(value[source], 'Identity ID')
+      : text(value[source], 'Identity metadata');
+  }
+  return Object.keys(result).some(key => key !== 'login') ? result : null;
+}
+
+export function identityMetadata(author, assignees, provider, reviewers = []) {
+  const authorIdentity = identityDetails(author, provider);
+  const assigneeIdentities = assignees.map(person => identityDetails(person, provider)).filter(Boolean);
+  const reviewerIdentities = reviewers.map(person => identityDetails(person, provider)).filter(Boolean);
+  const identities = {
+    ...(authorIdentity ? { author: authorIdentity } : {}),
+    ...(assigneeIdentities.length ? { assignees: assigneeIdentities } : {}),
+    ...(reviewerIdentities.length ? { reviewers: reviewerIdentities } : {}),
+  };
+  return Object.keys(identities).length ? { identities } : {};
+}
+
+export function count(value, context) {
+  if (!Number.isSafeInteger(value) || value < 0) invalid(`${context}: expected a nonnegative integer.`);
+  return value;
+}

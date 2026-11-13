@@ -9,15 +9,18 @@ import { validateQueryResult } from '../../src/providers/contract.js';
 import { compileFilter, filterItems } from '../../src/filters.js';
 import { runJson } from '../../src/process.js';
 import { frameMessage } from '../../src/native.js';
+import { formatResults } from '../../src/format.js';
+import { githubAccountOptions } from '../../src/github-auth.js';
 
 const execute = promisify(execFile);
 const bin = fileURLToPath(new URL('../../bin/devdash.js', import.meta.url));
 const nativeBin = fileURLToPath(new URL('../../bin/devdash-native.js', import.meta.url));
 const localBins = fileURLToPath(new URL('../../node_modules/.bin/', import.meta.url));
 const safeCodes = new Set([
-  'CLI_NOT_FOUND', 'CLI_FAILED', 'INVALID_PROVIDER_RESPONSE', 'PROVIDER_RESPONSE',
+  'CLI_NOT_FOUND', 'CLI_FAILED', 'GITHUB_SSO_REQUIRED', 'INVALID_PROVIDER_RESPONSE', 'PROVIDER_RESPONSE',
   'PROVIDER_NETWORK', 'PROVIDER_HTTP', 'BROWSER_NOT_INSTALLED', 'BROWSER_FAILED',
   'BUG_NOT_FOUND', 'BUG_ACCESS_DENIED', 'BUG_TIMEOUT', 'LOG_WRITE_FAILED',
+  'INVALID_FILTER', 'FILTER_FAILED', 'FILTER_RESULT', 'FILTER_LIMIT',
 ]);
 
 export class E2EError extends Error {
@@ -34,6 +37,18 @@ function check(condition, message) {
 }
 export function safeFailure(error) {
   return safeCodes.has(error?.code) ? error.code : 'PROVIDER_FAILURE';
+}
+
+export function safeCliFailure(stdout, stderr) {
+  for (const text of [stderr, stdout]) {
+    if (typeof text !== 'string' || text.length > 1024 * 1024) continue;
+    let result;
+    try { result = JSON.parse(text); } catch { continue; }
+    const errors = [result?.error, ...Object.values(result?.queries ?? {}).map(query => query?.error)];
+    const code = errors.map(safeFailure).find(value => value !== 'PROVIDER_FAILURE');
+    if (code) return code;
+  }
+  return 'PROVIDER_FAILURE';
 }
 
 export async function readLiveConfig(path) {
@@ -68,20 +83,24 @@ export async function readLiveConfig(path) {
   return config;
 }
 
-export async function preflight(config, { env = process.env, runProvider = runJson } = {}) {
+export async function preflight(config, { env = process.env, runProvider = runJson, runProviderText } = {}) {
   const checked = new Set();
   for (const raw of Object.values(config.profiles)) {
     const queries = isGroupedProfile(raw) ? Object.values(raw.queries) : [raw];
     for (const query of queries) {
-      const key = JSON.stringify([query.provider, query.hostname, query.organization, query.project, query.resource === 'bugs']);
+      const key = JSON.stringify([query.provider, query.hostname, query.account, query.auth, query.organization, query.project, query.resource === 'bugs']);
       if (checked.has(key)) continue;
       checked.add(key);
       try {
         if (query.provider === 'github') {
+          if (query.auth === 'anonymous') continue;
           const args = ['api', '--method', 'GET', 'user'];
-          if (query.hostname) args.push('--hostname', query.hostname);
-          const result = await runProvider('gh', args, { env });
+          if (query.hostname || query.account) args.push('--hostname', query.hostname ?? 'github.com');
+          const options = await githubAccountOptions(query, { env, runText: runProviderText }) ?? { env };
+          const result = await runProvider('gh', args, options);
           check(typeof result?.login === 'string' && result.login.length > 0, 'GitHub authentication probe returned an invalid response.');
+          check(query.account === undefined || result.login.toLowerCase() === query.account.toLowerCase(),
+            'GitHub authentication probe did not use the selected account.');
         } else if (query.provider === 'ado') {
           await runProvider('az', ['extension', 'show', '--name', 'azure-devops', '--output', 'json'], { env });
           const result = await runProvider('az', [
@@ -120,12 +139,7 @@ export async function liveCli(args, env) {
     return decodeResult(stdout, stderr);
   } catch (error) {
     if (error instanceof E2EError) throw error;
-    let code = 'PROVIDER_FAILURE';
-    try {
-      if (typeof error.stderr === 'string' && error.stderr.length <= 1024 * 1024) {
-        code = safeFailure(JSON.parse(error.stderr).error);
-      }
-    } catch { /* Untrusted subprocess output is deliberately excluded from test failures. */ }
+    const code = safeCliFailure(error.stdout, error.stderr);
     fail('E2E_CLI', `CLI operation failed (${code}); private stdout/stderr has been suppressed.`);
   }
 }
@@ -148,7 +162,7 @@ export async function liveNative(request, env) {
   }
 }
 
-function assertSnapshot(result, profile, name, query) {
+async function assertSnapshot(result, profile, name, query) {
   check(result?.schemaVersion === 1 && result?.profile === name && result?.query === query,
     'Query snapshot identity or schema is invalid.');
   check(!result.error && result.provider === profile.provider && result.resource === profile.resource,
@@ -156,7 +170,12 @@ function assertSnapshot(result, profile, name, query) {
   try { validateQueryResult(profile, result); } catch {
     fail('E2E_CONTRACT', 'Provider returned an invalid normalized item contract.');
   }
-  check(filterItems(result.items, compileFilter(profile.filter, profile)).length === result.items.length,
+  try {
+    for (const format of ['ansi', 'text', 'markdown']) formatResults(result, format);
+  } catch {
+    fail('E2E_PRESENTATION', 'A successful query snapshot cannot be rendered in every supported table format.');
+  }
+  check((await filterItems(result.items, compileFilter(profile.filter, profile))).length === result.items.length,
     'A returned item does not satisfy the configured local filter.');
 }
 
@@ -173,7 +192,7 @@ export async function runLiveSuite(config, options = {}) {
   };
   const checks = [];
   try {
-    await preflight(config, { env, runProvider: options.runProvider });
+    await preflight(config, { env, runProvider: options.runProvider, runProviderText: options.runProviderText });
     await command(['init', '--home', home], env);
     let index = 0;
     for (const raw of Object.values(config.profiles)) {
@@ -196,7 +215,7 @@ export async function runLiveSuite(config, options = {}) {
         ? Object.entries(effective.queries) : [[undefined, effective]];
       for (const [query, definition] of entries) {
         const snapshot = query === undefined ? refreshed : refreshed.queries?.[query];
-        assertSnapshot(snapshot, definition, name, query);
+        await assertSnapshot(snapshot, definition, name, query);
         const selector = query === undefined ? [] : ['--query', query];
         // PATH removes gh/az/cr: a cache read must work without provider executables.
         const offline = { ...env, PATH: '', Path: '' };
