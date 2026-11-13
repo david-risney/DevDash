@@ -26,20 +26,27 @@ async function until(action, describe = async () => '') {
 }
 
 async function completed(jobPath) {
-  return until(async () => {
-    const job = await readJson(jobPath);
-    assert.notEqual(job?.state, 'failed', `Synthetic worker failed: ${job?.code}`);
-    assert.ok(job?.state !== 'running' || workerRunning(job), 'Synthetic worker exited without publishing a terminal job state.');
-    return job?.state === 'complete';
-  }, async () => {
+  const describe = async () => {
     const job = await readJson(jobPath);
     const events = (await readFile(join(jobPath, '..', '..', 'logs', 'devdash.jsonl'), 'utf8'))
       .trim().split('\n').slice(-12).map(line => {
         const { event, code, durationMs } = JSON.parse(line);
         return { event, code, durationMs };
       });
-    return JSON.stringify({ state: job?.state, running: workerRunning(job), events });
-  });
+    return JSON.stringify({ state: job?.state, code: job?.code, running: workerRunning(job), events });
+  };
+  return until(async () => {
+    let job = await readJson(jobPath);
+    if (job?.state === 'running' && !workerRunning(job)) {
+      // The worker can commit completion and exit after the first read.
+      job = await readJson(jobPath);
+      if (job?.state === 'running') {
+        assert.fail(`Synthetic worker exited without publishing a terminal job state. ${await describe()}`);
+      }
+    }
+    assert.notEqual(job?.state, 'failed', `Synthetic worker failed: ${job?.code}`);
+    return job?.state === 'complete';
+  }, describe);
 }
 
 async function fixture(t) {

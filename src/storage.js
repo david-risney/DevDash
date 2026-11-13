@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import lockfile from 'proper-lockfile';
 import { DevDashError } from './errors.js';
 
@@ -21,12 +22,21 @@ export async function readJson(path) {
   }
 }
 
-export async function writeJson(path, value) {
+export async function writeJson(path, value, { platform = process.platform, replace = rename } = {}) {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${randomUUID()}.tmp`;
   try {
     await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
-    await rename(temporary, path);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await replace(temporary, path);
+        break;
+      } catch (error) {
+        // Windows readers or scanners can temporarily prevent atomic replacement.
+        if (platform !== 'win32' || attempt === 20 || !['EPERM', 'EACCES', 'EBUSY'].includes(error.code)) throw error;
+        await delay(50);
+      }
+    }
   } finally {
     await rm(temporary, { force: true });
   }

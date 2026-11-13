@@ -1067,8 +1067,10 @@ query's `refreshSeconds`. Watching a whole group emits the whole grouped result:
 `event: "error"` if any query failed, otherwise `event: "refreshed"` only when
 an actual refresh occurred (`fromCache: false`). `--query` watches only that query.
 
-Writes use atomic replacement and per-file interprocess locks. Concurrent
-on-demand reads of a missing/expired snapshot share the resulting refresh.
+Writes use atomic replacement and per-file interprocess locks.
+Windows reader/scanner sharing violations are retried for up to one second
+without deleting the existing snapshot; persistent failures remain explicit.
+Concurrent on-demand reads of a missing/expired snapshot share the resulting refresh.
 Explicit forced refreshes are serialized but are not silently skipped. Locks
 are heartbeated; abandoned locks become recoverable after about 30 seconds.
 A contending command waits up to roughly 10 seconds before reporting `BUSY`.
