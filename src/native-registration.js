@@ -5,6 +5,7 @@ import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DevDashError } from './errors.js';
 import { readJson, withLock, writeJson } from './storage.js';
+import { configSources } from './config.js';
 
 export const HOST_NAME = 'com.devdash.cli';
 
@@ -158,7 +159,10 @@ export async function manageNative(action, options = {}, dependencies = {}) {
       }
       const saved = { ...(settings ?? {}) };
       if (options.home !== undefined) saved.home = resolve(options.home);
-      if (options.config !== undefined) saved.config = resolve(options.config);
+      if (options.config !== undefined) {
+        const sources = configSources(options.config);
+        saved.config = sources.length === 1 ? sources[0] : sources;
+      }
       const origins = [...new Set([...allowed, ...ids])].sort();
       files[wrapperPath] = `@rem DevDash native host\r\n@echo off\r\nsetlocal DisableDelayedExpansion\r\n${quote(node)} ${quote(entry)} --launch-config ${quote(settingsPath)} %*\r\nexit /b %errorlevel%\r\n`;
       files[settingsPath] = JSON.stringify(saved, null, 2) + '\n';

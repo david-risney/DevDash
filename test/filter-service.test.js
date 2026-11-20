@@ -164,10 +164,10 @@ test('CLI and native consumers share filtered cached lists while definitions kee
   const env = { ...process.env, DEVDASH_HOME: home };
   const cli = fileURLToPath(new URL('../bin/devdash.js', import.meta.url));
   const native = fileURLToPath(new URL('../bin/devdash-native.js', import.meta.url));
-  const output = await execute(process.execPath, [cli, 'get', 'dashboard', '--cached-only'], { env, windowsHide: true });
+  const output = await execute(process.execPath, [cli, 'get', 'dashboard', '--cached-only', '--format', 'json'], { env, windowsHide: true });
   assert.equal(output.stderr, '');
   assert.deepEqual(JSON.parse(output.stdout).queries.ado.items, [adoRows[0]]);
-  const definition = await execute(process.execPath, [cli, 'profile', 'get', 'dashboard'], { env, windowsHide: true });
+  const definition = await execute(process.execPath, [cli, 'profile', 'get', 'dashboard', '--format', 'json'], { env, windowsHide: true });
   const profile = JSON.parse(definition.stdout).profile;
   assert.equal(profile.queries.ado.query.author, 'Alice');
   assert.equal(profile.queries.ado.creator, undefined);
@@ -201,7 +201,7 @@ test('JavaScript filters run per group query, invalidate on params/expression ed
   assert.ok(calls.every(call => !Object.hasOwn(call, 'filter') && !Object.hasOwn(call, 'params')));
   const env = { ...process.env, DEVDASH_HOME: home };
   const cli = fileURLToPath(new URL('../bin/devdash.js', import.meta.url));
-  const output = await execute(process.execPath, [cli, 'get', 'dashboard', '--query', 'github', '--cached-only'], { env, windowsHide: true });
+  const output = await execute(process.execPath, [cli, 'get', 'dashboard', '--query', 'github', '--cached-only', '--format', 'json'], { env, windowsHide: true });
   assert.equal(output.stderr, '');
   assert.deepEqual(JSON.parse(output.stdout).items, [githubRows[0]]);
   const native = fileURLToPath(new URL('../bin/devdash-native.js', import.meta.url));

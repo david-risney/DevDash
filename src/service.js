@@ -12,6 +12,7 @@ import { readRefreshJob, scheduleRefresh, workerRunning } from './background.js'
 import { mapLimit, withProviderSlot } from './concurrency.js';
 import { pageOptions, resultPage } from './results.js';
 import { fetchAvatar } from './avatars.js';
+import { defaultConfig, isRemoteProfile } from './profile-templates.js';
 
 function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
@@ -62,18 +63,25 @@ export class DevDash {
   }
 
   async createConfig() {
+    this.writableConfig();
     await withLock(this.paths.config, async (checkLock) => {
       if (await readJson(this.paths.config) !== null) {
         throw new DevDashError('CONFIG_EXISTS', `Configuration already exists at ${this.paths.config}.`);
       }
       checkLock();
-      await writeJson(this.paths.config, { version: 1, profiles: {} });
+      await writeJson(this.paths.config, defaultConfig());
     });
     return { schemaVersion: 1, config: this.paths.config };
   }
 
-  async config() {
-    return loadConfig(this.paths.config);
+  async config(options = {}) {
+    return loadConfig(this.paths.configs, { ...options, fetch: this.avatarDependencies.fetch ?? globalThis.fetch });
+  }
+
+  writableConfig() {
+    if (this.paths.configs.length !== 1 || /^https?:/u.test(this.paths.configs[0])) {
+      throw new DevDashError('CONFIG_READ_ONLY', 'Layered and URL configurations are read-only. Select one local --config file to edit configuration.');
+    }
   }
 
   async list() {
@@ -84,11 +92,14 @@ export class DevDash {
     };
   }
 
-  async profile(name) {
+  async profile(name, { allowTemplate = false } = {}) {
     validateName(name);
     const config = await this.config();
     if (!Object.hasOwn(config.profiles, name)) {
       throw new DevDashError('PROFILE_NOT_FOUND', `No profile named "${name}".`);
+    }
+    if (!allowTemplate && isRemoteProfile(config.profiles[name])) {
+      throw new DevDashError('REPOSITORY_REQUIRED', `Profile "${name}" requires a matching Git remote. Run devdash repo --profile ${name}.`);
     }
     return effectiveProfile(config.profiles[name]);
   }
@@ -135,7 +146,7 @@ export class DevDash {
 
   async validateQuery(name, query, definition) {
     return this.diagnostics.run('query.validate', { profile: name, queryName: query }, async () => {
-      const config = await readJson(this.paths.config) ?? { version: 1, profiles: {} };
+      const config = await this.config({ required: false }) ?? { version: 1, profiles: {} };
       validateConfig(config);
       const candidate = this.queryCandidate(config, name, query, definition);
       return {
@@ -149,6 +160,7 @@ export class DevDash {
   async setQuery(name, query, definition, expectedRevision) {
     return this.diagnostics.run('query.set', { profile: name, queryName: query }, async () => {
       this.validateExpectedRevision(expectedRevision);
+      this.writableConfig();
       return updateConfig(this.paths.config, config => {
         const current = Object.hasOwn(config.profiles, name) ? config.profiles[name] : null;
         if (this.queryRevision(current, query) !== expectedRevision) {
@@ -173,6 +185,7 @@ export class DevDash {
 
   async removeQuery(name, query, expectedRevision) {
     return this.diagnostics.run('query.remove', { profile: name, queryName: query }, async () => {
+      this.writableConfig();
       validateName(name);
       validateName(query);
       this.validateExpectedRevision(expectedRevision);
@@ -198,6 +211,7 @@ export class DevDash {
   }
 
   async saveProfile(name, profile) {
+    this.writableConfig();
     validateName(name);
     validateConfig({ version: 1, profiles: { [name]: profile } });
     const previous = await updateConfig(this.paths.config, (config) => {
@@ -217,6 +231,7 @@ export class DevDash {
   }
 
   async deleteProfile(name) {
+    this.writableConfig();
     validateName(name);
     const previous = await updateConfig(this.paths.config, (config) => {
       if (!Object.hasOwn(config.profiles, name)) {
@@ -493,7 +508,7 @@ export class DevDash {
       throw new DevDashError('INVALID_ARGUMENT', 'Select a profile when using a named query.');
     }
     const { profiles } = await this.config();
-    const results = await mapLimit(Object.keys(profiles), 3, async name => {
+    const results = await mapLimit(Object.keys(profiles).filter(name => !isRemoteProfile(profiles[name])), 3, async name => {
       try {
         return await this.get(name, options);
       } catch (error) {

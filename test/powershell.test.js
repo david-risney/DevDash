@@ -104,8 +104,77 @@ fs.writeFileSync('node_modules/synthetic-launcher-dependency/index.js', 'module.
 test('PowerShell checkout front invokes the actual JSON-first CLI', { skip: !hasPowerShell }, async t => {
   const home = await mkdtemp(join(tmpdir(), 'devdash-pwsh-home-'));
   t.after(() => rm(home, { recursive: true, force: true }));
-  const result = await run(launcher, ['--version'], { cwd: home, env: { ...process.env, DEVDASH_HOME: home } });
+  const result = await run(launcher, ['--version', '--format', 'json'], { cwd: home, env: { ...process.env, DEVDASH_HOME: home } });
   assert.equal(result.code, 0, result.stderr);
   assert.equal(result.stderr, '');
   assert.equal(JSON.parse(result.stdout).version, '0.1.0');
+});
+
+test('prompt hook runs once per Git project transition, composes with the prompt, and restores command status', { skip: !hasPowerShell }, async t => {
+  const f = await fixture(t);
+  const module = fileURLToPath(new URL('../scripts/DevDash.Prompt.psm1', import.meta.url));
+  const script = join(f.root, 'prompt-test.ps1');
+  await writeFile(script, `
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $false
+function global:prompt {
+    $global:PromptSawSuccess = $?
+    $global:PromptSawExitCode = $global:LASTEXITCODE
+    'SYNTHETIC> '
+}
+function global:Invoke-SyntheticDevDash {
+    $record = @{ cwd = (Get-Location).Path; arguments = @($args) }
+    [IO.File]::AppendAllText($env:PROMPT_LOG, ($record | ConvertTo-Json -Compress) + [Environment]::NewLine)
+    $global:LASTEXITCODE = 99
+}
+Import-Module -Name '${module.replaceAll("'", "''")}'
+$one = Join-Path $PSScriptRoot 'one'
+$two = Join-Path $PSScriptRoot 'two'
+$sub = Join-Path $one 'nested'
+$null = New-Item -ItemType Directory -Path $sub,$two
+& git init --quiet --template= $one
+if ($LASTEXITCODE -ne 0) { throw 'git init failed' }
+& git init --quiet --template= $two
+if ($LASTEXITCODE -ne 0) { throw 'git init failed' }
+Enable-DevDashPrompt -Command Invoke-SyntheticDevDash -ArgumentList @('--cached-only','--format','ascii')
+Enable-DevDashPrompt -Command Invoke-SyntheticDevDash
+Set-Location $one
+$global:LASTEXITCODE = 17
+$first = prompt
+if ($first -ne 'SYNTHETIC> ' -or $global:LASTEXITCODE -ne 17 -or $global:PromptSawExitCode -ne 17) {
+    throw 'Original prompt or native exit status was not preserved'
+}
+$null = prompt
+Set-Location $sub
+$null = prompt
+Set-Location $two
+$null = prompt
+Set-Location $PSScriptRoot
+$null = prompt
+Set-Location $one
+$null = prompt
+$global:LASTEXITCODE = 23
+Write-Error 'Synthetic previous failure' -ErrorAction Ignore
+$failure = prompt
+if ($global:PromptSawSuccess -or $global:LASTEXITCODE -ne 23) { throw 'Previous command failure status was not preserved' }
+Disable-DevDashPrompt
+$null = prompt
+Set-Location $two
+$null = prompt
+$records = @(Get-Content $env:PROMPT_LOG | ForEach-Object { $_ | ConvertFrom-Json })
+if ($records.Count -ne 3) { throw "Expected 3 project transitions, got $($records.Count)" }
+foreach ($record in $records) {
+    if (($record.arguments -join '|') -ne 'repo|--cached-only|--format|ascii') { throw 'Arguments were not forwarded' }
+}
+if ((prompt) -ne 'SYNTHETIC> ') { throw 'Original prompt was not restored' }
+Enable-DevDashPrompt -Command Invoke-SyntheticDevDash
+function global:prompt { 'REPLACEMENT> ' }
+Disable-DevDashPrompt
+if ((prompt) -ne 'REPLACEMENT> ') { throw 'Disabling overwrote a newer prompt' }
+Write-Output 'PROMPT_TEST_PASS'
+`);
+  const result = await run(script, [], { cwd: f.cwd, env: { ...process.env, PROMPT_LOG: join(f.root, 'calls.jsonl') } });
+  assert.equal(result.code, 0, result.stderr + result.stdout);
+  assert.match(result.stdout, /PROMPT_TEST_PASS/);
+  assert.equal(result.stderr, '');
 });

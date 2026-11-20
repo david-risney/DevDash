@@ -11,7 +11,9 @@ const MAX_FILES = 5;
 const codes = new Set([
   'FILTER_FAILED', 'FILTER_RESULT', 'FILTER_LIMIT',
   'INVALID_PROFILE', 'INVALID_CONFIG', 'INVALID_FILTER', 'INVALID_ARGUMENT', 'INVALID_JSON', 'INVALID_INPUT', 'INVALID_PRESENTATION', 'INPUT_TOO_LARGE',
-  'CONFIG_NOT_FOUND', 'CONFIG_EXISTS', 'PROFILE_NOT_FOUND', 'QUERY_NOT_FOUND', 'INVALID_CACHE', 'CACHE_MISS',
+  'CONFIG_NOT_FOUND', 'CONFIG_EXISTS', 'CONFIG_FETCH_FAILED', 'CONFIG_TOO_LARGE', 'CONFIG_READ_ONLY',
+  'PROFILE_NOT_FOUND', 'QUERY_NOT_FOUND', 'INVALID_CACHE', 'CACHE_MISS',
+  'REPOSITORY_REQUIRED', 'GIT_FAILED', 'AMBIGUOUS_REMOTE_PROFILE',
   'PROFILE_CHANGED', 'INVALID_PROVIDER_RESPONSE', 'PROVIDER_RESPONSE', 'PROVIDER_HTTP',
   'PROVIDER_NETWORK', 'CLI_FAILED', 'CLI_NOT_FOUND', 'GITHUB_SSO_REQUIRED', 'UNSUPPORTED_PROVIDER', 'UNSUPPORTED_QUERY',
   'UNSUPPORTED_AZ_LAUNCHER', 'UNSUPPORTED_CR_LAUNCHER', 'INVALID_PROVIDER', 'INVALID_REQUEST', 'MESSAGE_TOO_LARGE', 'INVALID_FRAME', 'BUSY',
@@ -32,7 +34,7 @@ export function diagnosticCode(error) {
 
 export function safeCommand(positionals) {
   const commands = new Set(['init', 'config', 'profile', 'get', 'refresh', 'format', 'cache', 'watch',
-    'doctor', 'hello', 'query', 'avatar', 'native', 'native-host', 'native-manifest', 'logs']);
+    'doctor', 'hello', 'query', 'avatar', 'native', 'native-host', 'native-manifest', 'logs', 'repo']);
   if (!commands.has(positionals[0])) return 'invalid';
   const command = positionals[0];
   if (!['config', 'profile', 'query', 'cache', 'logs'].includes(command)) return command;
@@ -47,9 +49,10 @@ export function diagnosticPathsOptions(args) {
     for (const key of ['home', 'config']) {
       if (args[index].startsWith(`--${key}=`)) {
         const value = args[index].slice(key.length + 3);
-        if (value) result[key] = value;
+        if (value) result[key] = key === 'config' && result[key] !== undefined ? [result[key]].flat().concat(value) : value;
       } else if (args[index] === `--${key}` && args[index + 1] && !args[index + 1].startsWith('-')) {
-        result[key] = args[index + 1];
+        const value = args[index + 1];
+        result[key] = key === 'config' && result[key] !== undefined ? [result[key]].flat().concat(value) : value;
       }
     }
   }

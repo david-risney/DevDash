@@ -117,6 +117,13 @@ test('reinstall preserves trusted launcher settings and legacy installations can
   assert.deepEqual((await f.call('list')).extensionIds, [id, second]);
 });
 
+test('native launcher registration preserves ordered file and URL config sources', async t => {
+  const f = await fixture(t);
+  const configs = [join(f.root, 'base.json'), 'https://example.com/config.json', join(f.root, 'override.json')];
+  await f.call('install', { extensionIds: [id], config: configs });
+  assert.deepEqual(JSON.parse(await readFile(join(f.directory, 'launcher.json'), 'utf8')).config, configs);
+});
+
 test('incomplete rollback is explicit rather than returning success or hiding recovery errors', async t => {
   const f = await fixture(t);
   const plan = await f.call('install', { preview: true });

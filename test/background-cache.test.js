@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir, endianness } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -11,6 +11,7 @@ import { readJson } from '../src/storage.js';
 import { workerRunning } from '../src/background.js';
 import { frameMessage } from '../src/native.js';
 import { testItem } from './helpers/test-provider.js';
+import { executeCommand } from '../src/commands.js';
 
 const execute = promisify(execFile);
 const cli = fileURLToPath(new URL('../bin/devdash.js', import.meta.url));
@@ -102,9 +103,9 @@ export async function queryProfile() {
 }
 `);
   const env = { ...process.env, NODE_OPTIONS: `--import=${pathToFileURL(preload).href}` };
-  const run = async args => {
-    const result = await execute(process.execPath, [cli, ...args, '--home', home, '--config', service.paths.config], {
-      env, windowsHide: true, timeout: 30_000,
+  const run = async (args, options = {}) => {
+    const result = await execute(process.execPath, [cli, ...args, '--format', 'json', '--home', home, '--config', service.paths.config], {
+      env, windowsHide: true, timeout: 30_000, ...options,
     });
     assert.equal(result.stderr, '');
     return JSON.parse(result.stdout);
@@ -148,6 +149,80 @@ test('real detached refresh survives its requesting CLI and coalesces other expi
   assert.equal(updated.items[0].title, 'Updated synthetic result');
   assert.equal((await f.service.cacheStatus('bugs')).refreshTiming.samples, 2);
   assert.equal((await f.service.cacheStatus('bugs')).backgroundRefresh.state, 'complete');
+});
+
+test('detached workers retain the complete ordered config stack and its cache identity', async t => {
+  const f = await fixture(t);
+  const overlay = join(f.root, 'overlay.json');
+  await writeFile(overlay, JSON.stringify({ profiles: { bugs: { query: 'label:synthetic' } } }));
+  const configs = [f.service.paths.config, overlay];
+  const service = new DevDash({ home: f.service.paths.home, config: configs }, {
+    now: () => Date.now() - 2000,
+    queryProfile: async () => ({ items: [testItem({ title: 'Layered cached result' })], truncated: false }),
+  });
+  await service.get('bugs');
+  const jobPath = `${service.cachePath('bugs')}.background.json`;
+  try {
+    const { stdout, stderr } = await execute(process.execPath, [cli, 'get', 'bugs', '--cache-mode', 'adaptive',
+      '--format', 'json', '--home', service.paths.home, ...configs.flatMap(source => ['--config', source])], {
+      env: { ...process.env, NODE_OPTIONS: `--import=${pathToFileURL(f.preload).href}` },
+      windowsHide: true, timeout: 30_000,
+    });
+    assert.equal(stderr, '');
+    assert.equal(JSON.parse(stdout).refreshStatus, 'scheduled');
+    await until(async () => {
+      try { return await readFile(join(f.root, 'started'), 'utf8'); }
+      catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+    });
+    await writeFile(join(f.root, 'release'), 'success');
+    await completed(jobPath);
+    assert.equal((await service.get('bugs', { cachedOnly: true })).items[0].title, 'Updated synthetic result');
+    assert.equal((await f.service.get('bugs', { cachedOnly: true })).items[0].title, 'Cached synthetic result');
+  } finally {
+    const job = await readJson(jobPath);
+    if (workerRunning(job)) process.kill(job.pid);
+    if (job?.pid) await until(() => !workerRunning({ ...job, state: 'running' }));
+  }
+});
+
+test('cwd and explicit-origin dashboards share detached refresh state after the requesting CLI exits', async t => {
+  const f = await fixture(t);
+  const directory = join(f.root, 'checkout');
+  await execute('git', ['init', '--quiet', '--template=', directory], { windowsHide: true });
+  await execute('git', ['-C', directory, 'remote', 'add', 'origin', 'https://github.com/example/repo.git'], { windowsHide: true });
+  await f.service.setProfile('auto', {
+    remoteUrls: ['https://github.com/{owner}/{repository}'],
+    provider: 'github', resource: 'bugs', repository: '{owner}/{repository}', refreshSeconds: 1,
+  });
+  f.service.now = () => Date.now() - 2000;
+  await executeCommand(['repo', directory], { service: f.service });
+  f.service.now = Date.now;
+  const runtimeDirectory = join(f.service.paths.cache, 'repositories');
+  const [runtime] = (await readdir(runtimeDirectory)).filter(name => name.endsWith('.json'));
+  const scoped = new DevDash({ home: f.service.paths.home, config: join(runtimeDirectory, runtime) });
+  const jobPath = `${scoped.cachePath('auto')}.background.json`;
+  try {
+    const stale = await f.run([], { cwd: directory });
+    assert.equal(stale.profile, 'auto');
+    assert.equal(stale.refreshStatus, 'scheduled');
+    assert.equal(stale.items[0].title, 'Cached synthetic result');
+    assert.ok(workerRunning(await readJson(jobPath)));
+    await until(async () => {
+      try { return await readFile(join(f.root, 'started'), 'utf8'); }
+      catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+    });
+    await writeFile(join(f.root, 'release'), 'success');
+    await completed(jobPath);
+    const updated = await f.run(['--origin', 'git@github.com:example/repo.git', '--cached-only'], { cwd: f.root });
+    assert.equal(updated.items[0].title, 'Updated synthetic result');
+    assert.equal(updated.repository.remote, 'https://github.com/example/repo');
+  } finally {
+    const job = await readJson(jobPath);
+    if (workerRunning(job)) {
+      process.kill(job.pid);
+      await until(() => !workerRunning(job));
+    }
+  }
 });
 
 test('native adaptive reads preserve framing and their refresh continues after the host closes', async t => {

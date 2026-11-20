@@ -9,13 +9,17 @@ import { safeCommand, providerProcessOptions } from './diagnostics.js';
 import { readResultJson } from './format.js';
 import { RESULT_FIELDS } from './results.js';
 import { manageNative } from './native-registration.js';
+import { isRemoteProfile } from './profile-templates.js';
+import { repositoryDashboard } from './repository.js';
+import { themeOptions } from './themes.js';
 
 export const help = {
   name: 'devdash',
   version: '0.1.0',
-  usage: 'devdash <command> [arguments] [options]',
+  usage: 'devdash [command] [arguments] [options]',
+  defaultCommand: 'repo --cache-mode adaptive (fall back to get --all when no template matches)',
   commands: {
-    init: 'Create an empty config, without overwriting an existing file.',
+    init: 'Create a config with GitHub, ADO, and Chromium remote templates; never overwrite an existing file.',
     'config show': 'Read and validate the JSON configuration.',
     'config validate [file]': 'Validate the current configuration or a supplied file.',
     'profile list': 'List named profiles.',
@@ -29,6 +33,9 @@ export const help = {
     'get <name> | get --all': 'Use fresh cached results, querying when missing or expired.',
     'get <name> --cached-only': 'Read cache only, including explicitly marked stale results.',
     'get <name> --cache-mode adaptive': 'Return expired cached data while refreshing in the background, unless recent refreshes are consistently fast.',
+    'repo [directory] [--profile <name>]': 'Show bugs and PRs/CLs for origin using matching profile templates (default current directory, adaptive caching).',
+    'repo --origin <url> [--profile <name>]': 'Use an explicit Git origin instead of inspecting the current directory; no checkout required.',
+    'repo [directory] --resolve-only': 'Inspect the matching profile and substituted definition without fetching or writing config/cache.',
     'refresh <name> | refresh --all [--due]': 'Force refresh, or refresh only expired entries with --due.',
     'refresh <name> --background [--query <query>] [--due]': 'Start a detached refresh and return job/status metadata, including on cold caches.',
     'avatar <name> --item-id <id> [--query <query>]': 'Retrieve one bounded raster avatar from a cached item; never returns credentials.',
@@ -36,7 +43,7 @@ export const help = {
     'format [--format <json|ansi|ascii|md>]': 'Read one query-result JSON document from stdin; render without querying or changing caches.',
     'cache status <name> | cache status --all': 'Read freshness and count metadata without querying.',
     'cache clear <name> | cache clear --all': 'Delete cached results.',
-    'watch [name] [--interval <seconds>]': 'Refresh due profiles in the foreground; output JSON lines.',
+    'watch [name] [--interval <seconds>]': 'Refresh due profiles in the foreground; append reports (JSON lines with --format json).',
     'doctor [profile] [--query <query>]': 'Check tools without authenticating; optionally check only dependencies for selected queries.',
     'logs path': 'Show diagnostic log location and retention limits.',
     'logs tail [--lines <count>] [--errors]': 'Read recent structured diagnostic records (default 100).',
@@ -49,12 +56,13 @@ export const help = {
   },
   options: {
     '--home <directory>': 'Data directory; defaults to DEVDASH_HOME or ~/.devdash.',
-    '--config <file>': 'Override the configuration file; caches are scoped to that file.',
+    '--config <file|url>': 'Repeat to merge configuration sources in order (later values win; arrays replace). HTTP(S) URLs must serve JSON directly. Stacks/URLs are read-only and have isolated caches.',
+    '--themes [glob]': 'Preview built-in themes with synthetic PRs; defaults to all. Quote globs such as "*tab" or "{chevron,semicircle}*". No provider calls.',
     '--user-config <file>': 'Override user presentation defaults (normally <home>/user.config.json); JSON output is unaffected.',
     '--query <name>': 'Select one named query for get, refresh, cache status/clear, or watch; requires a profile.',
     '--cache-mode <cache-first|adaptive>': 'Cache policy for get (default cache-first). Adaptive uses refreshSeconds as its minimum refresh age.',
     '--fast-query-ms <milliseconds>': 'Adaptive foreground-refresh threshold, 1-60000 (default 500); requires at least three successful timing samples.',
-    '--page-size <1-200>': 'Read a byte-bounded page of one query snapshot; JSON output only.',
+    '--page-size <1-200>': 'Read a byte-bounded page of one query snapshot; use --format json for structured data.',
     '--cursor <cursor>': 'Continue the same cached snapshot without fetching; keep page size and fields unchanged.',
     '--fields <field,...>': 'Project normalized item fields on paged reads; provider, kind, id, and url are always retained.',
     '--background': 'Start refresh without waiting for provider completion; select one query.',
@@ -62,20 +70,27 @@ export const help = {
     '--role <author|assignee|reviewer>': 'Avatar identity role (default author).',
     '--item-id <id>': 'Select one item from the current cached query for avatar retrieval.',
     '--repository <owner/repository>': 'Disambiguate an avatar item when GitHub issue/PR numbers overlap across repositories.',
+    '--profile <name>': 'Choose a remote URL template profile for repo; otherwise custom matches take precedence over built-ins.',
+    '--origin <url>': 'Override origin for repo or no-command invocations; bypass local Git discovery.',
+    '--resolve-only': 'Resolve repo templates without contacting providers or writing caches.',
     '--index <number>': 'Avatar identity index within assignees/reviewers (default 0).',
     '--cache-revision <revision>': 'Require the expected cached snapshot when retrieving an avatar.',
     '--browser <chrome|edge|both>': 'Native registration browser scope (default both).',
     '--install-directory <directory>': 'Native launcher/manifest directory (default LocalAppData\\DevDash\\NativeMessaging).',
     '--node-path <executable>': 'Node executable for native install (default current Node).',
     '--preview': 'Preview native registration changes without writing files or registry.',
-    '--pretty': 'Indent JSON output.',
-    '--format <json|ansi|ascii|md>': 'Output format for get, refresh, format, or watch (default json). Other commands remain JSON-only.',
-    '--help': 'Print this JSON command reference.',
-    '--version': 'Print JSON version information.',
+    '--pretty': 'Indent JSON output; requires --format json.',
+    '--format <json|ansi|ascii|md>': 'Output format for all CLI commands (default ansi). Native messaging always uses framed JSON.',
+    '--help': 'Print this command reference in the selected format.',
+    '--version': 'Print version information in the selected format.',
   },
 };
 
 export function parseCommand(args) {
+  const end = args.indexOf('--');
+  args = args.map((argument, index) => argument === '--themes' &&
+    (end === -1 || index < end) &&
+    (args[index + 1] === undefined || args[index + 1].startsWith('-')) ? '--themes=*' : argument);
   let parsed;
   try {
     parsed = parseArgs({
@@ -84,7 +99,8 @@ export function parseCommand(args) {
       strict: true,
       options: {
         home: { type: 'string' },
-        config: { type: 'string' },
+        config: { type: 'string', multiple: true },
+        themes: { type: 'string' },
         'user-config': { type: 'string' },
         file: { type: 'string' },
         all: { type: 'boolean' },
@@ -99,6 +115,9 @@ export function parseCommand(args) {
         'expected-revision': { type: 'string' },
         'item-id': { type: 'string' },
         repository: { type: 'string' },
+        profile: { type: 'string' },
+        origin: { type: 'string' },
+        'resolve-only': { type: 'boolean' },
         role: { type: 'string' },
         index: { type: 'string' },
         'cache-revision': { type: 'string' },
@@ -121,15 +140,20 @@ export function parseCommand(args) {
   } catch (error) {
     throw new DevDashError('INVALID_ARGUMENT', error.message);
   }
-  const format = parsed.values.format ?? 'json';
+  if (!parsed.positionals.length && !parsed.values.help && !parsed.values.version && parsed.values.themes === undefined) {
+    parsed.positionals.push(parsed.values.all ? 'get' : 'repo');
+    parsed.defaultCommand = !parsed.values.all;
+    if (!parsed.values['cached-only'] && !parsed.values['resolve-only']) parsed.values['cache-mode'] ??= 'adaptive';
+  }
+  const format = parsed.values.format ?? 'ansi';
   if (!['json', 'ansi', 'ascii', 'md'].includes(format)) {
     throw new DevDashError('INVALID_ARGUMENT', '--format must be json, ansi, ascii, or md.');
   }
   if (format !== 'json' && parsed.values.pretty) {
     throw new DevDashError('INVALID_ARGUMENT', '--pretty is only supported with JSON output.');
   }
-  if (format !== 'json' && !['get', 'refresh', 'format', 'watch'].includes(parsed.positionals[0])) {
-    throw new DevDashError('INVALID_ARGUMENT', 'Human-readable formats require get, refresh, format, or watch.');
+  if (parsed.positionals[0] === 'native-host' && parsed.values.format && format !== 'json') {
+    throw new DevDashError('INVALID_ARGUMENT', 'native-host always uses framed JSON; --format must be json or omitted.');
   }
   return parsed;
 }
@@ -179,7 +203,7 @@ async function mapProfiles(service, name, options, action) {
   if (name) return action(name);
   const config = await service.config();
   const results = [];
-  for (const profile of Object.keys(config.profiles)) {
+  for (const profile of Object.keys(config.profiles).filter(name => !isRemoteProfile(config.profiles[name]))) {
     try { results.push(await action(profile)); } catch (error) {
       results.push({ profile, ...errorJson(error) });
     }
@@ -188,20 +212,24 @@ async function mapProfiles(service, name, options, action) {
 }
 
 export async function executeCommand(args, dependencies = {}) {
-  const { values: options, positionals } = parseCommand(args);
+  const { values: options, positionals, defaultCommand } = parseCommand(args);
   const [command] = positionals;
   const service = dependencies.service ?? new DevDash(options);
   if (options.version) return { output: { name: help.name, version: help.version }, exitCode: 0 };
-  if (options.help || !command) return { output: help, exitCode: 0 };
+  if (options.help) return { output: help, exitCode: 0 };
+  if (options.themes !== undefined) {
+    argumentsFor(positionals, options, 0, ['themes']);
+    return { output: themeOptions(options.themes), exitCode: 0 };
+  }
   if (command === 'native' && (options.preview || positionals[1] === 'status' ||
       (positionals[1] === 'extensions' && positionals[2] === 'list'))) {
     return dispatchCommand(positionals, options, service, dependencies);
   }
   return service.diagnostics.run('command', { command: safeCommand(positionals) }, () =>
-    dispatchCommand(positionals, options, service, dependencies));
+    dispatchCommand(positionals, options, service, dependencies, defaultCommand));
 }
 
-async function dispatchCommand(positionals, options, service, dependencies) {
+async function dispatchCommand(positionals, options, service, dependencies, defaultCommand = false) {
   const [command, subcommand, name] = positionals;
   let output;
   if (command === 'native') {
@@ -232,13 +260,14 @@ async function dispatchCommand(positionals, options, service, dependencies) {
     argumentsFor(positionals, options, subcommand === 'validate' && name ? 3 : 2);
     if (subcommand === 'show') output = await service.config();
     else if (subcommand === 'validate') {
-      await loadConfig(name ?? service.paths.config);
+      if (name) await loadConfig(name);
+      else await service.config();
       output = { schemaVersion: 1, valid: true };
     } else throw new DevDashError('INVALID_ARGUMENT', 'Expected config show or config validate.');
   } else if (command === 'profile') {
     argumentsFor(positionals, options, subcommand === 'list' ? 2 : 3, subcommand === 'set' ? ['file'] : []);
     if (subcommand === 'list') output = await service.list();
-    else if (subcommand === 'get') output = { schemaVersion: 1, name, profile: await service.profile(name) };
+    else if (subcommand === 'get') output = { schemaVersion: 1, name, profile: await service.profile(name, { allowTemplate: true }) };
     else if (subcommand === 'remove') output = await service.removeProfile(name);
     else if (subcommand === 'set') {
       output = await service.setProfile(name, await definitionInput(options, dependencies));
@@ -253,28 +282,35 @@ async function dispatchCommand(positionals, options, service, dependencies) {
     else if (subcommand === 'set') output = await service.setQuery(name, query, await definitionInput(options, dependencies), options['expected-revision']);
     else if (subcommand === 'remove') output = await service.removeQuery(name, query, options['expected-revision']);
     else throw new DevDashError('INVALID_ARGUMENT', 'Expected query get, validate, set, or remove.');
+  } else if (command === 'repo') {
+    argumentsFor(positionals, options, subcommand ? 2 : 1,
+      options['resolve-only'] ? ['profile', 'origin', 'resolve-only']
+        : ['profile', 'origin', 'cached-only', 'cache-mode', 'fast-query-ms', 'query']);
+    validateCacheOptions(options);
+    output = await repositoryDashboard(service, {
+      directory: subcommand, origin: options.origin, profile: options.profile, resolveOnly: options['resolve-only'],
+      requiredConfig: options.config !== undefined,
+      cachedOnly: options['cached-only'], query: options.query,
+      cacheMode: options['cache-mode'],
+      ...(options['fast-query-ms'] === undefined ? {} : { fastQueryMs: Number(options['fast-query-ms']) }),
+    }, dependencies);
+    if (defaultCommand && output.matched === false && options.origin === undefined &&
+        options.profile === undefined && options.query === undefined && !options['resolve-only']) {
+      return dispatchCommand(['get'], { ...options, all: true }, service, dependencies);
+    }
   } else if (command === 'get' || command === 'refresh') {
     argumentsFor(positionals, options, subcommand ? 2 : 1,
       command === 'get' ? ['all', 'cached-only', 'query', 'cache-mode', 'fast-query-ms', 'page-size', 'cursor', 'fields'] : ['all', 'due', 'query', 'background']);
-    if (options['cache-mode'] !== undefined && !['cache-first', 'adaptive'].includes(options['cache-mode'])) {
-      throw new DevDashError('INVALID_ARGUMENT', '--cache-mode must be cache-first or adaptive.');
-    }
-    if (options['fast-query-ms'] !== undefined && (options['cache-mode'] !== 'adaptive' ||
-        !/^\d+$/.test(options['fast-query-ms']) || Number(options['fast-query-ms']) < 1 || Number(options['fast-query-ms']) > 60_000)) {
-      throw new DevDashError('INVALID_ARGUMENT', '--fast-query-ms requires adaptive mode and must be an integer from 1 to 60000.');
-    }
-    if (options['cache-mode'] === 'adaptive' && options['cached-only']) {
-      throw new DevDashError('INVALID_ARGUMENT', '--cache-mode adaptive cannot be combined with --cached-only.');
-    }
+    validateCacheOptions(options);
     const pagination = options['page-size'] !== undefined || options.cursor !== undefined || options.fields !== undefined;
-    if (pagination && (options.all || !subcommand || (options.format ?? 'json') !== 'json')) {
-      throw new DevDashError('INVALID_ARGUMENT', 'Paged reads require one selected query and JSON output.');
+    if (pagination && (options.all || !subcommand)) {
+      throw new DevDashError('INVALID_ARGUMENT', 'Paged reads require one selected query.');
     }
     if (options['page-size'] !== undefined && !/^\d+$/.test(options['page-size'])) {
       throw new DevDashError('INVALID_ARGUMENT', '--page-size must be an integer from 1 to 200.');
     }
-    if (options.background && (options.all || !subcommand || (options.format ?? 'json') !== 'json')) {
-      throw new DevDashError('INVALID_ARGUMENT', 'Background refresh requires one selected query and JSON output.');
+    if (options.background && (options.all || !subcommand)) {
+      throw new DevDashError('INVALID_ARGUMENT', 'Background refresh requires one selected query.');
     }
     output = await mapProfiles(service, subcommand, options, (profile) => (options.background
       ? service.startRefresh.bind(service) : pagination ? service.getPage.bind(service) : service.get.bind(service))(profile, {
@@ -375,6 +411,19 @@ async function dispatchCommand(positionals, options, service, dependencies) {
     throw new DevDashError('INVALID_ARGUMENT', `Unknown command "${command}"; run devdash --help.`);
   }
   return { output, exitCode: output.failed ? 2 : 0 };
+}
+
+function validateCacheOptions(options) {
+  if (options['cache-mode'] !== undefined && !['cache-first', 'adaptive'].includes(options['cache-mode'])) {
+    throw new DevDashError('INVALID_ARGUMENT', '--cache-mode must be cache-first or adaptive.');
+  }
+  if (options['fast-query-ms'] !== undefined && (options['cache-mode'] !== 'adaptive' ||
+      !/^\d+$/.test(options['fast-query-ms']) || Number(options['fast-query-ms']) < 1 || Number(options['fast-query-ms']) > 60_000)) {
+    throw new DevDashError('INVALID_ARGUMENT', '--fast-query-ms requires adaptive mode and must be an integer from 1 to 60000.');
+  }
+  if (options['cache-mode'] === 'adaptive' && options['cached-only']) {
+    throw new DevDashError('INVALID_ARGUMENT', '--cache-mode adaptive cannot be combined with --cached-only.');
+  }
 }
 
 export function validateWatch(args) {

@@ -21,7 +21,7 @@ try {
     if (-not $IsWindows) { throw 'Native host registration requires Windows.' }
     $runner = (Get-Command node -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
     $entry = Join-Path (Split-Path -Parent $PSScriptRoot) 'bin\devdash.js'
-    $arguments = @($entry, 'native', $(if ($Uninstall) { 'uninstall' } else { 'install' }), '--browser', $Browser.ToLowerInvariant())
+    $arguments = @($entry, 'native', $(if ($Uninstall) { 'uninstall' } else { 'install' }), '--browser', $Browser.ToLowerInvariant(), '--format', 'json')
     if (-not $Uninstall) {
         if ($NodePath) { $arguments += @('--node-path', $NodePath) }
         if ($ExtensionId.Count) { $arguments += @('--extension-id', ($ExtensionId -join ',')) }

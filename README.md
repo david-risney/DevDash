@@ -2,6 +2,8 @@
 
 A JSON-first Node.js CLI that gives scripts, browser extensions, and Dragon
 pipelines one place to configure developer queries and share cached results.
+Terminal output defaults to ANSI; use `--format json` for scripts and pipelines.
+Browser native messaging always uses framed JSON.
 
 | Provider | Bugs | Reviews | Transport |
 | --- | --- | --- | --- |
@@ -96,21 +98,175 @@ devdash get edge --query my-prs
 `profile set` can also create a missing configuration, so `init` is optional.
 `init` refuses to overwrite an existing file.
 
-### Convert JSON to readable output
+Running `devdash` without a command first tries a template-backed dashboard for
+the current directory's Git origin, equivalent to `devdash repo`. If the directory
+is not in Git, has no supported origin, or has no matching template, it falls back
+to `devdash get --all --cache-mode adaptive`. It reuses fresh caches, fetches missing
+results immediately, and normally returns expired results while refreshing them
+in the background. Queries with consistently fast refresh history refresh in
+the foreground instead. Each query's `refreshSeconds` controls the minimum age
+for refresh. Use `devdash --help` for the command reference.
 
-Choose the output format directly on `get`, `refresh`, or `watch`. JSON remains
-the default for scripts, pipelines, and browser/native messaging consumers:
+Options work without a command too: `devdash --format json` returns the selected
+dashboard as JSON, and `devdash --cached-only` reads its caches without refreshing.
+Use `devdash --all` to skip repository detection and open the whole dashboard.
+Explicit commands retain their existing defaults: `devdash get --all` waits for
+expired results to refresh.
+
+### Automatic Git project dashboard
+
+```powershell
+devdash repo
+devdash repo C:\src\another-checkout
+devdash repo --resolve-only --format json
+devdash repo --cached-only
+devdash repo --profile work-github
+devdash --origin https://github.com/owner/repository.git
+devdash repo --origin git@github.com:owner/repository.git --resolve-only --format json
+```
+
+`repo` reads the current Git worktree's root and `remote.origin.url`, including
+from subdirectories, linked worktrees, and submodules. It does not fetch Git
+remotes or execute repository scripts. It chooses a matching profile, substitutes
+URL variables, and shows its queries using **adaptive caching** and ANSI output
+by default. A cold cache waits for the first provider response; subsequent reads
+reuse fresh results and usually refresh expired results in the background.
+`--cached-only`, `--cache-mode cache-first`, and `--query <name>` are also supported.
+
+`--origin <url>` supplies the origin explicitly, works outside a checkout, and
+takes precedence over directory discovery without invoking Git. It uses the same
+normalization, templates, and per-origin caches as automatic detection. Explicit
+`repo`, `--origin`, `--profile`, `--query`, and `--resolve-only` requests do not fall
+back to unrelated profiles when no template matches.
+
+GitHub, Azure DevOps, and Chromium templates are built in, even with no config
+file. `init` now saves those three editable profiles instead of an empty config;
+it still refuses to overwrite a file. Existing configs are not rewritten.
+Templates are excluded from `get --all`, `refresh --all`, cache `--all`, and
+unqualified `watch`; use `repo` to bind them to a remote. Ordinary named profiles
+continue to work unchanged.
+
+| Built-in | Advertised remote template | Variables |
+| --- | --- | --- |
+| `github` | `https://github.com/{owner}/{repository}.git` | `owner`, `repository` |
+| `ado` | `https://dev.azure.com/{organization}/{project}/_git/{repository}` | `organization`, `project`, `repository` |
+| `ado` (legacy) | `https://{organization}.visualstudio.com/{project}/_git/{repository}` | Same |
+| `chromium` | `https://chromium.googlesource.com/{project}` | Gerrit project, e.g. `chromium/src` or `chromium/deps/icu` |
+
+HTTPS, `ssh://git@host/path`, and `git@host:path` spelling are normalized, and
+the `.git` suffix and trailing slash are optional. Legacy ADO's optional
+`DefaultCollection/` prefix is supported, as is ADO's
+`git@ssh.dev.azure.com:v3/organization/project/repository` SSH form is supported
+too. Captured values are URL-decoded (`My%20Project` becomes `My Project`);
+credentials are stripped from displayed remote metadata. Matching is anchored,
+with literal punctuation, not a regular expression. A final path variable can
+capture a nested Gerrit project; intermediate path variables capture one segment.
+For explicit `repo` requests, unsupported origins, missing origins, and non-Git directories produce no human
+output and a successful exit; JSON reports `matched: false` and a reason.
+Malformed or unsupported `--origin` values are argument errors.
+Git inspection, invalid configs, and provider failures are reported explicitly.
+
+The built-ins show up to 25 open GitHub issues/PRs, project-level ADO bugs and
+repository-level active PRs, or project-level Chromium CLs. **Chromium bugs are
+Chromium-wide** (up to 10): an origin URL does not reliably identify a bug
+component. Customize that query when you know the component mapping. Public
+submodule origins must actually be on `chromium.googlesource.com` to match this
+template; other origins use their own provider templates. Authentication remains
+with `gh`, `az`, or `cr`; no login or account switch is performed.
+
+Any standalone or grouped profile can advertise `remoteUrls`. For example:
+
+```json
+{
+  "remoteUrls": ["https://github.com/{Owner}/{Repository}.git"],
+  "refreshSeconds": 300,
+  "queries": {
+    "bugs": {
+      "provider": "github",
+      "resource": "bugs",
+      "repository": "{Owner}/{Repository}",
+      "query": "is:open",
+      "limit": 25
+    },
+    "prs": {
+      "provider": "github",
+      "resource": "prs",
+      "repository": "{Owner}/{Repository}",
+      "query": "is:open",
+      "limit": 25
+    }
+  }
+}
+```
+
+Save it with `profile set work-github --file <file>`. Add `"account"` to its
+GitHub queries to select a stored gh login; otherwise gh's active/environment
+authentication is used. **The remote's owner is not an authentication account.**
+Variables are case-sensitive and can have any letter-led alphanumeric/underscore
+name. They substitute recursively in every string value of the definition:
+for example `"project": "{Project}"`, query-object values, arrays,
+`filter.params`, and presentation settings. JSON keys are unchanged, and
+non-string values keep their types. Each URL alternative must declare every
+variable used by the profile. Substitution is literal, not JavaScript evaluation
+or context-sensitive escaping; use structured query fields and filter params
+rather than embedding untrusted values in executable expressions.
+
+Saved profiles override built-ins with the same name. Differently named custom
+matches take precedence over built-ins; multiple custom matches require
+`--profile`. Template structure and declared variables are checked on save;
+the fully substituted profile is validated against the ordinary provider schema
+before any provider call. `--resolve-only` shows that definition without provider
+calls or config/cache writes. Resolved definitions and results live under the
+DevDash cache, separately scoped by source config, profile, and origin, so moving
+between repositories cannot reuse another project's results. No query config is
+read from the repository being visited.
+
+### PowerShell prompt hook (opt-in)
+
+From a checkout, add these lines to your PowerShell profile, using its absolute path:
+
+```powershell
+Import-Module 'C:\path\to\DevDash\scripts\DevDash.Prompt.psm1'
+Enable-DevDashPrompt -Command 'C:\path\to\DevDash\devdash.ps1'
+```
+
+For a global npm installation, import
+`(Join-Path (npm root --global) 'devdash\scripts\DevDash.Prompt.psm1')` instead
+and run `Enable-DevDashPrompt` with no command override.
+Optional `-ArgumentList @('--cached-only')` avoids all provider calls, including
+on first entry; `@('--format', 'ascii')` selects plain output.
+
+The hook composes with the current `prompt`, invokes DevDash once on first entry
+to a Git project, and checks Git again only when the directory changes.
+Moving among subdirectories does not rerun DevDash. Entering a different repo
+(including a submodule/worktree), or leaving Git and returning, does.
+The existing prompt and previous command's native exit code/success state are
+preserved. `Disable-DevDashPrompt` restores the previous prompt without
+overwriting a newer replacement. DevDash does not modify `$PROFILE`, your
+personal prompt, or global Git configuration during installation.
+
+### Output formats
+
+Every ordinary CLI command supports `--format`, including `--help`, `--version`,
+configuration, diagnostics, native registration, queries, and `watch`.
+**ANSI is the default**, including redirected output. Scripts and pipelines
+must request `--format json`; native messaging remains JSON regardless of the
+terminal default.
 
 | Option | Output |
 | --- | --- |
 | `--format json` | Original structured results; use `--pretty` to indent |
-| `--format ansi` | Colored tables with emoji, linked titles and clickable item IDs |
+| `--format ansi` (default) | Colored tables with emoji, linked titles and clickable item IDs |
 | `--format ascii` | Plain-text tables with ASCII dividers and copyable URLs; no generated escapes or icons |
 | `--format md` | Compact Markdown tables with linked item IDs |
 
 From this checkout:
 
 ```powershell
+node .\bin\devdash.js --help --format ascii
+
+node .\bin\devdash.js config show --format json --pretty
+
 node .\bin\devdash.js get --all --cached-only --format md
 
 node .\bin\devdash.js get edge --format ansi
@@ -136,11 +292,13 @@ overrides; without it, `format` does not read a query configuration.
 
 These options replace the former `scripts\json-to-*.js` converters. `ascii`
 keeps source Unicode text intact; only generated table syntax is ASCII.
-`watch` keeps JSON-lines output by default; human formats append a table/report
-for each refresh or error, without clearing the terminal. Other commands
-(configuration, diagnostics, native host/manifest) remain JSON-only.
-`--pretty` cannot be combined with a non-JSON format. Fatal command errors
-remain JSON on stderr regardless of the selected output format.
+`watch` appends an ANSI report for each refresh or error, without clearing the
+terminal; use `watch --format json` for JSON lines. Non-query commands render
+their structured fields as readable tables; paged/projected results and
+background-refresh acknowledgements also support human formats.
+`--pretty` requires `--format json`. Fatal command errors use the selected
+format on stderr, with no success output on stdout. `native-host` is the sole
+protocol exception: it always uses framed JSON and rejects explicit human formats.
 
 Single-query, grouped-profile, batch, and standalone `cr` query-result envelopes
 are supported. Each query gets a friendly table: **Item, Title, Status, and
@@ -243,6 +401,60 @@ selected missing file is an error. Start with
 [`examples\user.config.json`](examples/user.config.json), validated by
 [`presentation.schema.json`](presentation.schema.json).
 
+Preview the actual built-in styles without fetching any providers:
+
+```powershell
+devdash --themes
+devdash --themes "*tab"
+devdash --themes "{chevron,semicircle}*" --format ansi
+devdash --themes --format json
+```
+
+The optional glob defaults to `*`; quote it to prevent shell expansion.
+ANSI previews use identical synthetic PRs with Open, Closed, and Draft states.
+ASCII/Markdown use their portable renderers; JSON lists matching names,
+descriptions, and configuration selectors. No matches produce an empty JSON
+list or an explicit human-readable message. Repeat `--config` to preview with
+your own palette and status settings.
+
+Select a built-in using `presentation.theme` in your user config, or at any
+of the file/profile/query override scopes:
+
+```json
+{
+  "version": 1,
+  "presentation": {
+    "theme": "chevron-tab",
+    "ansi": {
+      "palette": { "accent": "#94b5ff" },
+      "table": {
+        "title": { "width": "content", "inset": 1 },
+        "border": { "enabled": true, "background": false }
+      }
+    }
+  }
+}
+```
+
+| Theme | Gallery reference | Title and frame | Status |
+| --- | --- | --- | --- |
+| `half-block` | Original DevDash | Full-width title, half-block sides and bottom | Colored text, no pills |
+| `chevron` | 2 | Full-width chevron title, thin sides and rounded bottom | Colored text, no pills |
+| `semicircle` | 3 | Full-width semicircle title, thin sides and rounded bottom | Rounded pills with emoji and text |
+| `chevron-tab` | 4 | Compact chevron tab embedded in a rounded outline | Emoji only, no pills |
+| `semicircle-tab` (default) | Rounded version of 4 | Compact semicircle tab embedded in a rounded outline | Rounded text pills |
+| `rounded-pills` | 6 | Rounded outline with an unfilled inline title in the upper border | Rounded pills with emoji and text |
+
+All themes retain alternating row stripes. Status treatments are theme defaults,
+not restrictions: explicit status options override them and survive theme switches.
+
+**No built-in applies background colors to border characters**, including
+straight sides and horizontal rules. Each border segment resets to the terminal's
+default background before drawing. The filled title area and result-row surfaces
+are separate. The Powerline title caps and status capsules require a Nerd Font.
+Choose `half-block` and `"status": {"pills": false}` for standard Unicode framing
+without Powerline title or pill caps.
+
 Precedence, from lowest to highest:
 
 1. Built-in defaults.
@@ -258,6 +470,13 @@ style properties from the built-in base row, not from an earlier stripe array.
 Named palette colors remain available to narrower scopes; a query can redefine
 a palette name or reference a color introduced by its file/group.
 Settings are resolved at command startup; restart `watch` after theme edits.
+Selecting a different named theme at a narrower scope resets the ANSI table's
+style and geometry to that theme, then applies explicit settings at that scope.
+Palette colors, icon/link preferences, explicitly configured status settings (including labels,
+semantic state colors and status-column styles), and ASCII/Markdown settings
+remain inherited. Without a theme switch, table overrides continue to deep-merge.
+This keeps a switch back to `half-block` from retaining another theme's outline
+without discarding independently configured status pills.
 
 For example, the user config can define colors and reference them in table styles:
 
@@ -298,7 +517,8 @@ For example, a query's `"presentation": {"ansi": {"table": {"header":
 {"background": "#573648"}}}}` changes just its title band's background.
 
 ANSI `palette` values are six-digit hex colors. Styles accept literal
-`#RRGGBB` or `p:name` references, plus `bold`. `table.header`, `table.rows`
+`#RRGGBB` or `p:name` references, plus `bold`. A style's `background: false`
+uses the terminal default instead of painting a background. `table.header`, `table.rows`
 (one to eight repeating logical-row styles), and `table.columns` support
 foreground/background/bold. Column keys are `item`, `title`, `status`, `person`,
 `repository`, `priority`, `severity`, and `updated`. `table.states.active`,
@@ -307,8 +527,11 @@ override those accents. `table.missing` styles `-` cells, `table.warning` styles
 truncation notices, and `table.error` styles error panels. Column background
 colors cover their padding and restore the row background before the next gap.
 `ansi.links`, `ansi.icons`, and `ansi.table.caps` can each be disabled.
-`ansi.table.cornerStyle` selects `"half"` (default), `"quarter"`, or
-`"semicircle"`; `caps: false` disables side shapes and any bottom border.
+`ansi.table.cornerStyle` selects `"half"`, `"quarter"`,
+`"semicircle"`, or `"rounded"`; `caps: false` disables all shapes and rules,
+including title caps (not independent status pills). The default theme uses
+`"rounded"`. The legacy `"semicircle"` corner preset caps every row;
+the named `semicircle` theme instead keeps straight body borders.
 
 ASCII supports `links` and printable ASCII `table.separator` / `table.junction`
 (one to three characters, equal lengths). Markdown supports `links`,
@@ -333,11 +556,70 @@ that gap, with the whitespace split before and after it. The default is an
 empty separator and a two-cell gap. Narrow terminals shrink gaps and padding
 as needed before wrapping; all geometry is budgeted in display cells.
 
+`table.title.width` is `"full"` for a full-width title band, `"content"` for
+a compact tab, or a cell count from 8 to 240 (including title caps and padding).
+Tabs embed in `border.top` when present; `table.title.inset` adds 0–6 rule cells
+before the tab. Long titles wrap without losing text. Width is constrained by
+the panel and the minimum room needed for caps/padding.
+
+`table.status.pills` selects capsules instead of plain colored text; its default
+depends on the theme above. `table.status.labelStyle` selects `text`,
+`emoji-text`, or `emoji`, independently of capsules. Emoji styles use an unlocked
+padlock for active states, a check mark for closed states, a purple circle for
+merged states, and a memo for drafts, including unfamiliar provider state names
+through their semantic tone. Explicit `labels` replacements take precedence
+over automatic emoji decoration.
+
+Capsule fill follows the effective
+status foreground (`table.states` / `table.columns.status`); their text uses
+`table.status.foreground`. Set `table.status.background` to a literal color or
+palette reference to override the semantic fill uniformly. Configure capsule
+`left`, `right`, and `padding` (0–3 cells) independently. Empty cap strings with
+zero padding produce rectangular highlights. Set `pills: false` for ordinary
+colored text, with no capsule fill or padding. Pill decorations are included in
+width calculations, and cap glyphs always use the terminal-default background.
+
+`table.status.labels` maps provider state names to displayed text or emoji
+(case-insensitive, otherwise exact matches: `open`, `Closed`, `IN_PROGRESS`, etc.).
+Unknown states keep their friendly text. A `draft` mapping replaces the entire
+status of draft items; without one, drafts show `Draft / <mapped state>`.
+Label maps merge across scopes; narrower keys override regardless of casing.
+Labels must be nonblank, safe single-line strings of at most 128 characters.
+These settings affect ANSI only; ASCII, Markdown, JSON and caches retain their
+original state text/data.
+
+For example, this embedded `presentation` customizes pills independently of
+the default semicircle title tab:
+
+```json
+{
+  "theme": "semicircle-tab",
+  "ansi": {
+    "table": {
+      "status": {
+        "pills": true,
+        "left": "\ue0b6",
+        "right": "\ue0b4",
+        "padding": 1,
+        "foreground": "#1f2933",
+        "labels": { "open": "\ud83d\udd13", "closed": "\u2705", "merged": "\ud83d\udfe3", "draft": "\ud83d\udcdd" }
+      },
+      "states": {
+        "active": { "foreground": "#8cc8ff" },
+        "closed": { "foreground": "#a6e3a1" },
+        "draft": { "foreground": "#f9d380" }
+      }
+    }
+  }
+}
+```
+
 For example, this embedded `presentation` keeps half-block framing, adds a
 column connector, and makes every border use a named color:
 
 ```json
 {
+  "theme": "half-block",
   "ansi": {
     "palette": { "frame": "#34465b" },
     "glyphs": { "warning": "!", "pr": "\uea64", "cl": "\ueafc" },
@@ -364,8 +646,17 @@ column connector, and makes every border use a named color:
 or an object with `left`, `fill`, and `right` glyphs. When adding a rule not
 supplied by the preset, supply all three properties; an existing rule can be
 overridden partially. `caps: false` disables all sides and rules.
+For compact titles, the top rule and title share a line rather than adding a
+separate rule above the title. `border.enabled: false` removes body sides and
+horizontal rules while preserving the separately styled title band/caps.
 `colorSource` is `"header"` (the half-block default) or `"row"`;
 an explicit `foreground` color overrides that choice.
+`border.colors` can override `left`, `right`, `top`, `bottom`, `titleLeft`,
+`titleRight`, `lastLeft`, and `lastRight` separately with hex or palette colors.
+Final-row sides inherit their normal side color unless explicitly overridden.
+`border.background` defaults to `false` (terminal default) for every preset;
+setting a color explicitly opts into filled border cells. Title fill is
+configured separately with `table.header.background`.
 `filledSides: true` paints space-valued sides with the row background, as in
 the quarter-corner preset.
 
@@ -488,9 +779,40 @@ results under `~\.devdash\cache`. Set `DEVDASH_HOME` to use another data
 directory, or pass `--home <directory>`. All consumers running as the same
 user with the same data directory share the cache.
 
-`--config <file>` selects a different config file. Its cache is isolated from
-other config files even if they share the data directory. Relative paths are
-resolved from the invoking process's working directory.
+`--config <file|url>` selects configuration sources instead of the default
+config file. Repeat it to apply sources **in the order given**: objects merge
+recursively, later scalar values win, and arrays replace earlier arrays.
+Sources can be partial overlays; omitted root `version`/`profiles` default to
+`1`/`{}`, and the final merged configuration must pass validation. User
+presentation defaults remain the lowest-priority user layer, followed by
+file, profile/group, and query settings. Within each scope, file presentation
+layers retain their order, including theme resets and status-label overrides.
+
+```powershell
+devdash get --all --config .\base.json --config .\personal.json
+devdash --config "https://example.com/devdash/base.json" --config .\overrides.json
+devdash --themes "*tab" --config .\base.json --config .\colors.json
+```
+
+Relative file paths resolve from the invoking process's working directory.
+Caches are isolated by the complete ordered source list (including URL query
+strings), even when sources share a data directory. A single local source
+retains its existing cache identity. Detached workers and installed native
+launchers preserve the same ordered sources.
+
+URL sources must serve JSON directly over HTTP(S); prefer HTTPS. Downloads
+have a 10-second timeout and 1 MiB size limit. Redirects, embedded credentials,
+and URL fragments are rejected. DevDash sends no provider tokens, cookies,
+or automatic sign-in credentials. Server bodies and full URLs are not copied
+into retrieval errors. Only use remote configurations you trust: they can
+define queries and sandboxed JavaScript filters. Sources are reloaded when
+configuration is read, including for cached-only queries; URL configs therefore
+require network access even when query results are cached.
+
+Layered and URL configurations are **read-only**: `init`, profile writes, and
+query writes fail explicitly rather than guessing which source to edit.
+Use one local `--config` file for editing commands. Cache operations and
+read-only validation remain available with a stack.
 
 ```json
 {
@@ -909,7 +1231,7 @@ and can override it with a value from 1 to 20,000.
 ### Managing profiles
 
 ```powershell
-devdash config show --pretty
+devdash config show --format json --pretty
 devdash config validate
 devdash config validate .\examples\config.json
 devdash profile list
@@ -1059,7 +1381,8 @@ devdash watch edge --query review-prs --interval 5
 ```
 
 `watch` runs in the foreground, polls every second by default, reloads profiles,
-and refreshes due snapshots. It emits one JSON line per actual refresh or error;
+and refreshes due snapshots. It emits one report per actual refresh or error
+(one JSON line with `--format json`);
 fresh-cache skips produce no output. Failed queries are reported and retried on
 later polls. Ctrl+C stops subsequent refreshes; an in-flight query finishes first.
 The polling interval is a scheduling granularity, not a replacement for each
@@ -1089,8 +1412,8 @@ configuration, not the provider tool's current credentials.
 
 ## JSON result contract
 
-Normal commands print one JSON document to stdout, with no progress text.
-`--pretty` changes only indentation. A grouped profile returns one envelope
+With `--format json`, normal commands print one JSON document to stdout, with
+no progress text. `--pretty` changes only indentation. A grouped profile returns one envelope
 containing independent named query envelopes (empty lists shown here):
 
 ```json
@@ -1300,9 +1623,9 @@ any per-query errors.
 | --- | --- |
 | `0` | Success |
 | `1` | Invalid arguments/config, missing cache, provider failure, or I/O error for a single command |
-| `2` | One or more failures in a grouped profile, batch, or `doctor`; stdout still contains the structured report |
+| `2` | One or more failures in a grouped profile, batch, or `doctor`; stdout still contains the report in the selected format |
 
-Flat-profile or selected-query failures emit a JSON error on **stderr**, with no
+Flat-profile or selected-query failures emit an error in the selected format on **stderr**, with no
 success output on stdout. Provider stderr is not echoed because it may contain credentials or
 private diagnostics. Run the failing `gh`/`az`/`cr` query directly when troubleshooting.
 
@@ -1373,7 +1696,7 @@ Consume the grouped Edge profile as four independent lists. Exit `2` still
 provides the grouped report, so check per-query errors before using a list:
 
 ```powershell
-$json = devdash get edge
+$json = devdash get edge --format json
 $exitCode = $LASTEXITCODE
 if ($exitCode -notin 0, 2) { throw 'DevDash command failed' }
 $result = $json | ConvertFrom-Json
@@ -1388,11 +1711,11 @@ if ($result.failed) {
 ($result.queries.'review-prs'.items) | Select-Object id, title, state, url
 ```
 
-For one list, use `devdash get edge --query my-prs` and consume `$result.items`.
+For one list, use `devdash get edge --query my-prs --format json` and consume `$result.items`.
 The existing flat-profile consumer also remains unchanged:
 
 ```powershell
-$json = devdash get my-prs
+$json = devdash get my-prs --format json
 if ($LASTEXITCODE -ne 0) { throw 'DevDash query failed' }
 $result = $json | ConvertFrom-Json
 $result.items | Select-Object id, title, state, url
@@ -1401,21 +1724,21 @@ $result.items | Select-Object id, title, state, url
 For a scheduled refresh:
 
 ```powershell
-$json = devdash refresh --all --due
+$json = devdash refresh --all --due --format json
 if ($LASTEXITCODE -ne 0) { throw "DevDash refresh failed: $json" }
 ```
 
 ### Dragon pipelines
 
-Run `devdash refresh --all --due` as a scheduled command and consume stdout as
+Run `devdash refresh --all --due --format json` as a scheduled command and consume stdout as
 JSON, checking the exit code. A separate step can run
-`devdash get <profile> --cached-only` to consume the snapshot without a network
-request. For the Edge dashboard, use `devdash get edge --cached-only` and map
+`devdash get <profile> --cached-only --format json` to consume the snapshot without a network
+request. For the Edge dashboard, use `devdash get edge --cached-only --format json` and map
 `result.queries['bugs'].items`, `result.queries['security-bugs'].items`,
 `result.queries['my-prs'].items`, and `result.queries['review-prs'].items` to
 four separate output lists. Inspect `failed` and each entry's `error`; exit `2`
 is a partial-failure report, not empty output. To consume only one list, run
-`devdash get edge --query my-prs --cached-only` and read `result.items`.
+`devdash get edge --query my-prs --cached-only --format json` and read `result.items`.
 Use the same OS user and `DEVDASH_HOME` as the other consumers. This
 repository does not create or modify a Dragon pipeline automatically.
 
@@ -1448,8 +1771,9 @@ source. `--extension-id` also accepts comma-separated IDs when development and
 published extension IDs must both be allowed. `--install-directory` selects the generated
 host files; its default is `%LOCALAPPDATA%\DevDash\NativeMessaging`.
 
-`--home` and `--config` select trusted local paths at installation time; native
-messages cannot override them. Installation requires Node 22 or later and
+`--home` selects a local data directory; repeatable `--config` selects trusted
+file/URL sources at installation time. Native messages cannot override them,
+and layered/URL configurations remain read-only. Installation requires Node 22 or later and
 bootstraps missing checkout dependencies using `npm ci`; setup diagnostics go
 to stderr. It does not install provider CLIs/browser binaries or authenticate.
 Run `devdash doctor` or native `health` to check provider tools. Keep the
@@ -1478,6 +1802,7 @@ retains shared files while the other browser still references them. Use the same
 `--install-directory` when managing a nondefault installation. The existing
 `scripts\install-native-host.ps1` is now a thin compatibility wrapper around
 these CLI commands; it no longer implements registry operations.
+The compatibility wrapper explicitly requests JSON, preserving its existing output.
 
 For manual registration, generate a manifest and register it **only when you
 are ready to connect your plugin** (replace the extension ID):
@@ -1487,7 +1812,7 @@ $extensionId = 'REPLACE-WITH-YOUR-32-CHARACTER-EXTENSION-ID'
 $launcher = (Resolve-Path .\bin\devdash-native.cmd).Path
 $manifest = Join-Path $env:LOCALAPPDATA 'DevDash\com.devdash.cli.json'
 New-Item -ItemType Directory -Force (Split-Path $manifest) | Out-Null
-$json = devdash native-manifest --extension-id $extensionId --launcher $launcher
+$json = devdash native-manifest --extension-id $extensionId --launcher $launcher --format json
 if ($LASTEXITCODE -ne 0) { throw 'Invalid native host configuration' }
 [System.IO.File]::WriteAllText($manifest, $json, [System.Text.UTF8Encoding]::new($false))
 
@@ -1662,7 +1987,7 @@ Restart without a cursor instead of mixing pages from different snapshots.
 `page.total` counts cached matches; `truncated` still describes the provider
 fetch limit, not whether another cached page exists. Pages shrink as needed
 to stay within 768 KiB. A single oversized item requires a narrower projection.
-CLI: `devdash get dashboard --query bugs --page-size 50 --fields title,state`.
+CLI: `devdash get dashboard --query bugs --page-size 50 --fields title,state --format json`.
 
 Images are not embedded in each result row. Retrieve one identity avatar from
 the current cache with:

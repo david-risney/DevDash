@@ -3,14 +3,17 @@ import schema from '../presentation.schema.json' with { type: 'json' };
 import { DevDashError } from './errors.js';
 import { readJson } from './storage.js';
 import { displayWidth, segmenter } from './terminal-width.js';
+import { configurationLayers } from './config.js';
 
 const ajv = new Ajv({ allErrors: true, strict: false }).addSchema(schema);
 const validateUser = ajv.getSchema(schema.$id);
 const validateSettings = ajv.compile({ $ref: `${schema.$id}#/definitions/presentation` });
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const statusOverrides = Symbol('statusOverrides');
 const invalid = () => { throw new DevDashError('INVALID_PRESENTATION', 'Invalid presentation settings. Check presentation.schema.json and named palette references.'); };
 
-export const defaultPresentation = {
+const basePresentation = {
+  theme: 'semicircle-tab',
   ansi: {
     palette: {
       header: '#2e4052', row: '#1f2933', alternate: '#27333f', text: '#e0e8f0',
@@ -25,6 +28,8 @@ export const defaultPresentation = {
     table: {
       caps: true,
       cornerStyle: 'half',
+      title: { width: 'full', inset: 0 },
+      status: { pills: true, labelStyle: 'text', left: '\ue0b6', right: '\ue0b4', padding: 1, foreground: 'p:row', labels: {} },
       padding: 1, gap: 2, separator: '', border: {},
       header: { background: 'p:header', foreground: 'p:accent', bold: true },
       rows: [
@@ -60,11 +65,40 @@ const borderPresets = {
     lastLeft: '\u{1fbec}', lastRight: '\u{1fbef}', colorSource: 'row', filledSides: true,
   },
   semicircle: { left: '\ue0b6', right: '\ue0b4', colorSource: 'row' },
+  rounded: {
+    left: '\u2502', right: '\u2502', titleLeft: '', titleRight: '', colorSource: 'header',
+    top: { left: '\u256d', fill: '\u2500', right: '\u256e' },
+    bottom: { left: '\u2570', fill: '\u2500', right: '\u256f' },
+  },
 };
+
+const framedTheme = (left, right, width, status) => ({
+  ansi: { table: {
+    status,
+    cornerStyle: 'rounded',
+    title: { width, inset: width === 'full' ? 0 : 1 },
+    border: { titleLeft: left, titleRight: right, ...(width === 'full' ? { top: false } : {}) },
+    header: { background: 'p:accent', foreground: 'p:row', bold: true },
+  } },
+});
+
+export const presentationThemes = {
+  'half-block': { ansi: { table: { status: { pills: false } } } },
+  chevron: framedTheme('\ue0b2', '\ue0b0', 'full', { pills: false }),
+  semicircle: framedTheme('\ue0b6', '\ue0b4', 'full', { labelStyle: 'emoji-text' }),
+  'chevron-tab': framedTheme('\ue0b2', '\ue0b0', 'content', { pills: false, labelStyle: 'emoji' }),
+  'semicircle-tab': framedTheme('\ue0b6', '\ue0b4', 'content', {}),
+  'rounded-pills': { ansi: { table: {
+    cornerStyle: 'rounded', title: { width: 'content', inset: 1 },
+    header: { background: false }, status: { labelStyle: 'emoji-text' },
+  } } },
+};
+
+export const defaultPresentation = merge(basePresentation, presentationThemes[basePresentation.theme]);
 
 /** Apply glyph overrides after the selected preset without persisting derived defaults. */
 export function ansiBorder(settings) {
-  const border = merge(borderPresets[settings.table.cornerStyle], settings.table.border);
+  const border = merge({ enabled: true, background: false, ...borderPresets[settings.table.cornerStyle] }, settings.table.border);
   return {
     ...border, titleLeft: border.titleLeft ?? border.left, titleRight: border.titleRight ?? border.right,
     lastLeft: border.lastLeft ?? border.left, lastRight: border.lastRight ?? border.right,
@@ -82,16 +116,37 @@ function merge(base, override) {
 
 export function resolvePresentation(...layers) {
   let settings = structuredClone(defaultPresentation);
-  for (const layer of layers) {
+  let explicitStatus = {};
+  for (let layer of layers) {
     if (layer === undefined) continue;
     if (!validateSettings(layer)) invalid();
+    const inheritedStatus = layer[statusOverrides];
+    const labels = layer.ansi?.table?.status?.labels;
+    if (labels !== undefined) {
+      const entries = Object.entries(labels).map(([state, label]) => [state.toLowerCase(), label]);
+      if (new Set(entries.map(([state]) => state)).size !== entries.length) invalid();
+      layer = { ...layer, ansi: { ...layer.ansi, table: { ...layer.ansi.table,
+        status: { ...layer.ansi.table.status, labels: Object.fromEntries(entries) },
+      } } };
+    }
+    explicitStatus = merge(explicitStatus, inheritedStatus ?? layer.ansi?.table?.status ?? {});
+    if (layer.theme !== undefined && layer.theme !== settings.theme) {
+      // Theme defaults change together; only explicitly configured status settings survive.
+      const { states, columns } = settings.ansi.table;
+      settings.ansi.table = {
+        ...structuredClone(basePresentation.ansi.table), states,
+        columns: { ...structuredClone(basePresentation.ansi.table.columns), status: columns.status },
+      };
+      settings = merge(settings, presentationThemes[layer.theme]);
+    }
     settings = merge(settings, layer);
+    settings.ansi.table.status = merge(settings.ansi.table.status, explicitStatus);
   }
-  const checkReferences = value => {
+  const checkReferences = (value, colors = false) => {
     for (const [key, entry] of Object.entries(value)) {
-      if (['foreground', 'background'].includes(key) && entry.startsWith('p:') &&
+      if ((colors || ['foreground', 'background'].includes(key)) && typeof entry === 'string' && entry.startsWith('p:') &&
           !Object.hasOwn(settings.ansi.palette, entry.slice(2))) invalid();
-      if (object(entry) || Array.isArray(entry)) checkReferences(entry);
+      if (key !== 'labels' && (object(entry) || Array.isArray(entry))) checkReferences(entry, key === 'colors');
     }
   };
   checkReferences(settings.ansi.table);
@@ -114,10 +169,18 @@ export function resolvePresentation(...layers) {
       if (!glyph(border[key][part], 1)) invalid();
     }
   }
+  const status = settings.ansi.table.status;
+  for (const key of ['left', 'right']) {
+    if (status[key] !== '' && !glyph(status[key], 1)) invalid();
+  }
+  for (const [state, label] of Object.entries(status.labels)) {
+    if (!safe(state) || state.trim() !== state || !safe(label) || !label.trim() ||
+        [...segmenter.segment(label)].some(part => displayWidth(part.segment) === 0)) invalid();
+  }
   // Replacement row arrays still inherit the base row's unspecified style properties.
   settings.ansi.table.rows = settings.ansi.table.rows.map(row => ({ ...defaultPresentation.ansi.table.rows[0], ...row }));
   if (settings.ascii.table.separator.length !== settings.ascii.table.junction.length) invalid();
-  return settings;
+  return Object.defineProperty(settings, statusOverrides, { value: explicitStatus });
 }
 
 export function ansiColor(color, palette) {
@@ -127,7 +190,8 @@ export function ansiColor(color, palette) {
 
 export function ansiStyle(style, palette, background = true) {
   return [
-    ...(background && style.background ? [`48;2;${ansiColor(style.background, palette)}`] : []),
+    ...(background && style.background !== undefined
+      ? [style.background === false ? '49' : `48;2;${ansiColor(style.background, palette)}`] : []),
     ...(style.foreground ? [`38;2;${ansiColor(style.foreground, palette)}`] : []),
     style.bold ? '1' : '22',
   ].join(';');
@@ -139,15 +203,16 @@ export async function loadPresentation(paths, config, { required = false } = {})
     throw new DevDashError('INVALID_PRESENTATION', 'The explicitly selected user configuration file does not exist.');
   }
   if (user !== null && !validateUser(user)) invalid();
-  const layers = [user?.presentation, config?.presentation];
+  const sources = config?.[configurationLayers] ?? [config];
+  const layers = [user?.presentation, ...sources.map(source => source?.presentation)];
   const base = resolvePresentation(...layers);
   const profiles = new Map();
   for (const [name, profile] of Object.entries(config?.profiles ?? {})) {
     const queries = new Map();
-    const profileLayers = [...layers, profile.presentation];
+    const profileLayers = [...layers, ...sources.map(source => source?.profiles?.[name]?.presentation)];
     const settings = resolvePresentation(...profileLayers);
-    for (const [query, definition] of Object.entries(profile.queries ?? {})) {
-      queries.set(query, resolvePresentation(...profileLayers, definition.presentation));
+    for (const query of Object.keys(profile.queries ?? {})) {
+      queries.set(query, resolvePresentation(...profileLayers, ...sources.map(source => source?.profiles?.[name]?.queries?.[query]?.presentation)));
     }
     profiles.set(name, { settings, queries });
   }

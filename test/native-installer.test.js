@@ -97,6 +97,10 @@ test('launcher accepts only trusted configuration flags and browser-supplied met
   assert.deepEqual(launcherOptions(['--launch-config', config, `chrome-extension://${id}/`, '--parent-window=0']),
     { home: directory, config: join(directory, 'custom.json') });
   assert.deepEqual(launcherOptions(['--home', directory, '--config', config]), { home: directory, config });
+  const sources = [join(directory, 'base.json'), 'https://example.com/config.json', config];
+  await writeFile(config, JSON.stringify({ home: directory, config: sources.slice(0, 2) }));
+  assert.deepEqual(launcherOptions(['--launch-config', config, '--config', sources[2]]), { home: directory, config: sources });
+  assert.deepEqual(launcherOptions(['--config', sources[0], '--config', sources[1]]), { config: sources.slice(0, 2) });
   for (const args of [['--home'], ['--home', directory, '--home', directory], ['--command', 'get'], ['chrome-extension://*/']]) {
     assert.throws(() => launcherOptions(args));
   }

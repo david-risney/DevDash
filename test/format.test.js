@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { formatResults } from '../src/format.js';
+import { formatDocument, formatResults } from '../src/format.js';
 import { testItem } from './helpers/test-provider.js';
 
 const formats = ['markdown', 'ansi', 'text'];
@@ -19,6 +19,29 @@ const snapshot = (overrides = {}) => ({
 const failure = { profile: 'failed-profile', error: { code: 'CLI_FAILED', message: 'Authentication failed.', diagnosticId: 'example-id' } };
 const cli = fileURLToPath(new URL('../bin/devdash.js', import.meta.url));
 const cliFormats = { ansi: 'ansi', text: 'ascii', markdown: 'md' };
+const legacyPresentation = { theme: 'half-block', ansi: { table: { status: { pills: false } } } };
+
+test('command documents render nested values, sanitize headings and cells, and never invent query links', () => {
+  const document = { status: 'ready', checks: {
+    '\x1b[31m<script>\u202e': { enabled: false, count: 0, missing: null, empty: [], object: {}, text: '|<img>\x1b[2J' },
+  }, profiles: ['one', 'two'] };
+  const before = structuredClone(document);
+  for (const format of formats) {
+    const { output } = formatDocument(document, format);
+    for (const value of ['ready', 'false', 'null', 'one', 'two']) assert.ok(output.includes(value), value);
+    assert.ok(!output.includes('undefined'));
+    assert.ok(!output.includes('Links:'));
+    assert.ok(!output.includes('\u202e'));
+    assert.ok(!output.includes('\x1b[2J'));
+    assert.ok(!output.includes('\x1b[31m'));
+    if (format === 'markdown') {
+      assert.ok(!output.includes('<script>'));
+      assert.ok(!output.includes('<img>'));
+      assert.ok(output.includes('\\|&lt;img&gt;'));
+    } else if (format === 'text') assert.ok(!output.includes('\x1b'));
+  }
+  assert.deepEqual(document, before);
+});
 
 async function convert(format, input, args = [], chunks) {
   const home = await mkdtemp(join(tmpdir(), 'devdash-format-'));
@@ -251,7 +274,7 @@ const stripLinks = value => value.replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, '');
 const stripAnsi = value => stripLinks(value).replace(/\x1b\[[\d;]*m/g, '');
 function rawTableLines(output) {
   const lines = output.split('\n');
-  const first = lines.findIndex(line => /^(?:Item\s+\||[\u2590\ue0b6\u{1fbee}] )/u.test(stripAnsi(line)));
+  const first = lines.findIndex(line => /^(?:Item\s+\||\u256d|[\u2590\ue0b6\u{1fbee}] )/u.test(stripAnsi(line)));
   assert.ok(first !== -1, 'Expected an aligned table');
   const end = lines.indexOf('', first);
   return lines.slice(first, end === -1 ? undefined : end);
@@ -282,7 +305,7 @@ test('console tables wrap rather than truncate long titles, preserving full info
     priority: 'P2', severity: 'S2', updatedAt: '2026-02-03T04:05:06.000Z' });
   for (const columns of [24, 40, 80, 120]) {
     for (const format of ['text', 'ansi']) {
-      const output = formatResults(snapshot({ items: [row] }), format, { columns }).output;
+      const output = formatResults(snapshot({ items: [row] }), format, { columns, presentation: legacyPresentation }).output;
       const lines = tableLines(output);
       const headers = format === 'text' ? tableCells(rawTableLines(output)[0]) : [];
       if (format === 'text') assert.deepEqual(headers.slice(0, 3), ['Item', 'Title', 'Status']);
@@ -311,7 +334,7 @@ test('emoji, CJK and combining sequences do not shift console table columns', ()
     .replaceAll('e\u0301', 'e').replaceAll('\u{1f469}\u200d\u{1f4bb}', 'xx')
     .replaceAll('\u2600\ufe0e', 'x').replaceAll('\u2600\ufe0f', 'xx').replaceAll('\u{1f1fa}\u{1f1f8}', 'xx'));
   for (const format of ['text', 'ansi']) {
-    const output = formatResults(snapshot({ items }), format, { columns: 80 }).output;
+    const output = formatResults(snapshot({ items }), format, { columns: 80, presentation: legacyPresentation }).output;
     const lines = tableLines(output);
     if (format === 'ansi') {
       const first = stripLinks(bandLine(bodyLines(output)[0]));
@@ -343,8 +366,8 @@ test('ANSI tables have SGR colors, linked IDs and emoji; plain tables use a sepa
   assert.ok(!output.includes('\ueaf7'));
   assert.ok(!output.includes('\ueace'));
   assert.ok(!output.includes('Title'));
-  assert.match(stripAnsi(output), /^\u2590 .* \u258c$/m);
-  assert.doesNotMatch(output, /[\u2500-\u257f]/);
+  assert.match(stripAnsi(output), /^\u256d\u2500\ue0b6 .* \ue0b4\u2500*\u256e$/m);
+  assert.match(stripAnsi(output), /^\u2570\u2500+\u256f$/m);
   assert.ok(!output.includes('Links:'));
   const plain = formatResults(input, 'text').output;
   assert.doesNotMatch(plain, /[\x00-\x08\x0b-\x1f\x7f-\x9f]/);
@@ -357,7 +380,7 @@ test('ANSI tables have SGR colors, linked IDs and emoji; plain tables use a sepa
     providerData: { mergeStatus: 'conflicts', reviewerVotes: [{ reviewer: 'Reviewer', vote: -5, required: true }] } });
   const ansi = formatResults(snapshot({ provider: 'ado', resource: 'prs', items: [pr] }), 'ansi').output;
   assert.ok(ansi.includes('\uea64'));
-  assert.ok(ansi.includes('\x1b[38;2;249;211;128;22mDraft / Active'));
+  assert.ok(ansi.includes('\x1b[0;48;2;249;211;128;38;2;31;41;51;22m Draft / Active '));
   for (const text of ['sourceBranch', 'targetBranch', 'reviewers', 'reviewerVotes', 'conflicts', 'providerData']) {
     assert.ok(!ansi.includes(text));
   }
@@ -366,7 +389,7 @@ test('ANSI tables have SGR colors, linked IDs and emoji; plain tables use a sepa
   const cl = testItem({ provider: 'chromium', kind: 'cl', state: 'MERGED', providerData: { changeId: 'Iexample' } });
   const change = formatResults(snapshot({ provider: 'chromium', resource: 'cls', items: [cl] }), 'ansi').output;
   assert.ok(change.includes('\ueafc'));
-  assert.ok(change.includes('\x1b[38;2;166;227;161;22mMerged'));
+  assert.ok(change.includes('\x1b[0;48;2;166;227;161;38;2;31;41;51;22m Merged '));
 });
 
 test('ANSI keeps Nerd Font dashboard, warning and review accents without a separate query preamble', () => {
@@ -403,7 +426,7 @@ test('ANSI tables use header-colored half-block sides and bottom with continuous
     testItem({ priority: 'P1', severity: 'S2' }),
     testItem({ id: '2', title: 'Another bug', priority: 'P2' }),
   ];
-  const { output } = formatResults(snapshot({ items }), 'ansi');
+  const { output } = formatResults(snapshot({ items }), 'ansi', { presentation: legacyPresentation });
   assert.ok(output.includes('\x1b[0;38;2;46;64;82m\u2590\x1b[0;48;2;46;64;82;38;2;190;230;249;1m '));
   assert.ok(!stripAnsi(output).includes('Title'));
   assert.ok(output.includes('\x1b[38;2;243;165;207;1mP1'));
@@ -436,7 +459,7 @@ test('ANSI padding and wrapped content fit the terminal width without dropping I
     state: 'IN_PROGRESS', priority: 'P1', updatedAt: '2026-03-04T05:06:07.000Z',
   });
   for (const columns of [24, 25, 26, 40, 80, 100, 120]) {
-    const output = formatResults(snapshot({ items: [item] }), 'ansi', { columns }).output;
+    const output = formatResults(snapshot({ items: [item] }), 'ansi', { columns, presentation: legacyPresentation }).output;
     const table = tableLines(output);
     const widths = table.map(line => cellCount(line.replaceAll(bugEmoji[1], 'xx')));
     assert.ok(widths.every(width => width <= columns), `Width ${columns}: ${widths}`);
@@ -455,7 +478,7 @@ test('ANSI stripes alternate per item, not per wrapped line, and restart indepen
     testItem({ id: '3', title: 'Another long title that wraps without splitting the stripe into different backgrounds' }),
   ];
   const grouped = { queries: { first: snapshot({ items }), second: snapshot({ items: [testItem()] }) } };
-  const { output } = formatResults(grouped, 'ansi', { columns: 40 });
+  const { output } = formatResults(grouped, 'ansi', { columns: 40, presentation: legacyPresentation });
   const first = output.split('\n\n').find(block => block.includes('48;2;46;64;82'));
   const rows = bodyLines(first);
   const groups = [];
@@ -484,7 +507,7 @@ test('ANSI table foreground colors have readable contrast against both stripe ba
     const channel = value / 255;
     return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
   }).reduce((sum, channel, index) => sum + channel * [0.2126, 0.7152, 0.0722][index], 0);
-  const rows = rawTableLines(formatResults(snapshot({ items }), 'ansi', { columns: 160 }).output);
+  const rows = rawTableLines(formatResults(snapshot({ items }), 'ansi', { columns: 160, presentation: legacyPresentation }).output);
   for (const row of rows.slice(0, -1)) {
     const background = row.match(/48;2;(\d+);(\d+);(\d+)/).slice(1).map(Number);
     const foregrounds = [...bandLine(row).matchAll(/38;2;(\d+);(\d+);(\d+)/g)].map(match => match.slice(1).map(Number));
@@ -528,7 +551,7 @@ test('ANSI half-block panels retain counts, warnings, empty results and errors a
   } };
   const width = value => cellCount(value.replaceAll('\u4fee\u590d', 'xxxx').replaceAll('e\u0301', 'e').replaceAll(bugEmoji[1], 'xx'));
   for (const columns of [24, 40, 100]) {
-    const { output, failed } = formatResults(document, 'ansi', { columns, now });
+    const { output, failed } = formatResults(document, 'ansi', { columns, now, presentation: legacyPresentation });
     assert.equal(failed, 1);
     const panels = output.split('\n\n').filter(block => stripAnsi(block).startsWith('\u2590'));
     assert.equal(panels.length, 3);

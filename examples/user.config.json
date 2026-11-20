@@ -2,6 +2,7 @@
   "$schema": "../presentation.schema.json",
   "version": 1,
   "presentation": {
+    "theme": "semicircle-tab",
     "ansi": {
       "palette": {
         "header": "#2e4052",
@@ -12,21 +13,9 @@
         "priority": "#f3a5cf"
       },
       "table": {
-        "cornerStyle": "half",
         "padding": 1,
         "gap": 2,
         "separator": "",
-        "border": {
-          "colorSource": "header",
-          "left": "\u2590",
-          "right": "\u258c",
-          "bottom": { "left": "\u259d", "fill": "\u2580", "right": "\u2598" }
-        },
-        "header": { "background": "p:header", "foreground": "p:accent", "bold": true },
-        "rows": [
-          { "background": "p:row", "foreground": "p:text" },
-          { "background": "p:alternate", "foreground": "p:text" }
-        ],
         "columns": {
           "item": { "foreground": "p:accent", "bold": true },
           "priority": { "foreground": "p:priority", "bold": true }

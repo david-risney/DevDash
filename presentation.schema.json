@@ -16,7 +16,7 @@
       "type": "object", "additionalProperties": false,
       "properties": {
         "foreground": { "$ref": "#/definitions/color" },
-        "background": { "$ref": "#/definitions/color" },
+        "background": { "anyOf": [{ "$ref": "#/definitions/color" }, { "const": false }] },
         "bold": { "type": "boolean" }
       }
     },
@@ -50,6 +50,7 @@
     "presentation": {
       "type": "object", "additionalProperties": false,
       "properties": {
+        "theme": { "enum": ["half-block", "chevron", "semicircle", "chevron-tab", "semicircle-tab", "rounded-pills"] },
         "ansi": {
           "type": "object", "additionalProperties": false,
           "properties": {
@@ -78,13 +79,38 @@
               "type": "object", "additionalProperties": false,
               "properties": {
                 "caps": { "type": "boolean" },
-                "cornerStyle": { "enum": ["half", "quarter", "semicircle"] },
+                "cornerStyle": { "enum": ["half", "quarter", "semicircle", "rounded"] },
+                "title": {
+                  "type": "object", "additionalProperties": false,
+                  "properties": {
+                    "width": { "anyOf": [{ "enum": ["full", "content"] }, { "type": "integer", "minimum": 8, "maximum": 240 }] },
+                    "inset": { "type": "integer", "minimum": 0, "maximum": 6 }
+                  }
+                },
+                "status": {
+                  "type": "object", "additionalProperties": false,
+                  "properties": {
+                    "pills": { "type": "boolean" },
+                    "labelStyle": { "enum": ["text", "emoji-text", "emoji"] },
+                    "left": { "$ref": "#/definitions/glyph" },
+                    "right": { "$ref": "#/definitions/glyph" },
+                    "padding": { "type": "integer", "minimum": 0, "maximum": 3 },
+                    "foreground": { "$ref": "#/definitions/color" },
+                    "background": { "$ref": "#/definitions/color" },
+                    "labels": {
+                      "type": "object", "maxProperties": 128,
+                      "propertyNames": { "minLength": 1, "maxLength": 80 },
+                      "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 128 }
+                    }
+                  }
+                },
                 "padding": { "type": "integer", "minimum": 0, "maximum": 3 },
                 "gap": { "type": "integer", "minimum": 0, "maximum": 6 },
                 "separator": { "type": "string", "maxLength": 16 },
                 "border": {
                   "type": "object", "additionalProperties": false,
                   "properties": {
+                    "enabled": { "type": "boolean" },
                     "left": { "$ref": "#/definitions/glyph" },
                     "right": { "$ref": "#/definitions/glyph" },
                     "titleLeft": { "$ref": "#/definitions/glyph" },
@@ -95,7 +121,21 @@
                     "bottom": { "$ref": "#/definitions/rule" },
                     "filledSides": { "type": "boolean" },
                     "colorSource": { "enum": ["header", "row"] },
-                    "foreground": { "$ref": "#/definitions/color" }
+                    "foreground": { "$ref": "#/definitions/color" },
+                    "background": { "anyOf": [{ "$ref": "#/definitions/color" }, { "const": false }] },
+                    "colors": {
+                      "type": "object", "additionalProperties": false,
+                      "properties": {
+                        "left": { "$ref": "#/definitions/color" },
+                        "right": { "$ref": "#/definitions/color" },
+                        "titleLeft": { "$ref": "#/definitions/color" },
+                        "titleRight": { "$ref": "#/definitions/color" },
+                        "lastLeft": { "$ref": "#/definitions/color" },
+                        "lastRight": { "$ref": "#/definitions/color" },
+                        "top": { "$ref": "#/definitions/color" },
+                        "bottom": { "$ref": "#/definitions/color" }
+                      }
+                    }
                   }
                 },
                 "header": { "$ref": "#/definitions/style" },

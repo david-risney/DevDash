@@ -4,7 +4,8 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
-import { executeCommand, validateWatch } from '../src/commands.js';
+import { executeCommand, parseCommand, validateWatch } from '../src/commands.js';
+import { presentationThemes } from '../src/presentation.js';
 import { DevDash } from '../src/service.js';
 import { DevDashError } from '../src/errors.js';
 import { testItem } from './helpers/test-provider.js';
@@ -21,9 +22,59 @@ async function fixture(t) {
 }
 
 test('help and version do not require configuration', async () => {
-  assert.equal((await executeCommand([])).output.name, 'devdash');
   assert.equal((await executeCommand(['--help'])).exitCode, 0);
   assert.deepEqual((await executeCommand(['--version'])).output, { name: 'devdash', version: '0.1.0' });
+});
+
+test('theme globs select real built-ins without configuration or providers', async () => {
+  assert.deepEqual((await executeCommand(['--themes'])).output.themes.map(theme => theme.name), Object.keys(presentationThemes));
+  for (const [glob, expected] of [
+    ['*tab', ['chevron-tab', 'semicircle-tab']], ['chevron?', []],
+    ['{chevron,semicircle}', ['chevron', 'semicircle']], ['[cs]*-tab', ['chevron-tab', 'semicircle-tab']],
+    ['half-?????', ['half-block']], ['missing*', []],
+  ]) {
+    const result = await executeCommand([`--themes=${glob}`]);
+    assert.deepEqual(result.output.themes.map(theme => theme.name), expected);
+    assert.equal(result.exitCode, 0);
+    for (const theme of result.output.themes) assert.deepEqual(theme.presentation, { theme: theme.name });
+  }
+  assert.deepEqual(parseCommand(['--themes', '--config', 'one.json', '--config=two.json']).values.config, ['one.json', 'two.json']);
+  for (const args of [['--themes='], ['--themes=['], ['--themes=*', 'get', 'work'], ['--themes', '--all']]) {
+    await assert.rejects(executeCommand(args), { code: 'INVALID_ARGUMENT' });
+  }
+});
+
+test('no matching repository falls back to all profiles adaptively while explicit get keeps its policy', async t => {
+  const { service } = await fixture(t);
+  const dependencies = { service, git: async () => {
+    throw Object.assign(new Error('Synthetic non-Git directory'), { code: 128, stderr: 'not a git repository' });
+  } };
+  let now = Date.now(), fetched = 0, scheduled = 0;
+  service.now = () => now;
+  service.query = async () => { fetched++; return { items: [testItem()], truncated: false }; };
+  service.scheduleRefresh = async () => { scheduled++; return { state: 'scheduled' }; };
+  await service.setProfile('bugs', profile);
+  await service.setProfile('other', profile);
+  const cold = await executeCommand([], dependencies);
+  assert.equal(cold.exitCode, 0);
+  assert.equal(cold.output.results.length, 2);
+  assert.ok(cold.output.results.every(result => !result.fromCache && result.refreshStatus === 'complete'));
+  assert.equal(fetched, 2);
+  const fresh = await executeCommand([], dependencies);
+  assert.ok(fresh.output.results.every(result => result.fromCache && result.refreshStatus === 'fresh'));
+  assert.equal(fetched, 2);
+  assert.equal(scheduled, 0);
+  now += 300_000;
+  const expired = await executeCommand([], dependencies);
+  assert.ok(expired.output.results.every(result => result.fromCache && result.stale && result.refreshStatus === 'scheduled'));
+  assert.equal(scheduled, 2);
+  assert.equal(fetched, 2);
+  const cachedOnly = await executeCommand(['--cached-only'], dependencies);
+  assert.ok(cachedOnly.output.results.every(result => result.fromCache && result.stale && !Object.hasOwn(result, 'refreshStatus')));
+  assert.equal(scheduled, 2);
+  const explicit = await executeCommand(['get', '--all'], { service });
+  assert.ok(explicit.output.results.every(result => !result.fromCache && !Object.hasOwn(result, 'refreshStatus')));
+  assert.equal(fetched, 4);
 });
 
 test('commands support profile JSON files and stdin including PowerShell BOM', async (t) => {

@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "profiles": {
+    "github": {
+      "remoteUrls": ["https://github.com/{owner}/{repository}.git"],
+      "refreshSeconds": 300,
+      "queries": {
+        "bugs": {
+          "provider": "github", "resource": "bugs",
+          "repository": "{owner}/{repository}", "query": "is:open", "limit": 25
+        },
+        "prs": {
+          "provider": "github", "resource": "prs",
+          "repository": "{owner}/{repository}", "query": "is:open", "limit": 25
+        }
+      }
+    },
+    "ado": {
+      "remoteUrls": [
+        "https://dev.azure.com/{organization}/{project}/_git/{repository}",
+        "https://{organization}.visualstudio.com/{project}/_git/{repository}",
+        "https://{organization}.visualstudio.com/DefaultCollection/{project}/_git/{repository}"
+      ],
+      "refreshSeconds": 300,
+      "queries": {
+        "bugs": {
+          "provider": "ado", "resource": "bugs",
+          "organization": "https://dev.azure.com/{organization}", "project": "{project}",
+          "query": {
+            "wiql": "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project AND [System.WorkItemType] = 'Bug' AND [System.State] NOT IN ('Closed', 'Done', 'Removed') ORDER BY [System.ChangedDate] DESC"
+          },
+          "limit": 25
+        },
+        "prs": {
+          "provider": "ado", "resource": "prs",
+          "organization": "https://dev.azure.com/{organization}", "project": "{project}",
+          "repository": "{repository}", "query": { "status": "active" }, "limit": 25
+        }
+      }
+    },
+    "chromium": {
+      "remoteUrls": ["https://chromium.googlesource.com/{project}"],
+      "refreshSeconds": 300,
+      "queries": {
+        "bugs": {
+          "provider": "chromium", "resource": "bugs",
+          "query": "type:bug status:open", "limit": 10
+        },
+        "cls": {
+          "provider": "chromium", "resource": "cls",
+          "project": "{project}", "query": "status:open", "limit": 25
+        }
+      }
+    }
+  }
+}

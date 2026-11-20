@@ -82,6 +82,7 @@
     },
     "profile": {
       "oneOf": [
+        { "$ref": "#/definitions/remoteProfile" },
         {
           "allOf": [
             { "$ref": "#/definitions/query" },
@@ -106,6 +107,47 @@
             }
           }
         }
+      ]
+    },
+    "templateQuery": {
+      "type": "object",
+      "required": ["provider", "resource"],
+      "propertyNames": {
+        "enum": ["provider", "resource", "auth", "account", "repository", "repositories",
+          "hostname", "organization", "project", "host", "query", "queryId", "bugIds",
+          "workItemTypes", "include", "status", "creator", "reviewer", "filter",
+          "refreshSeconds", "limit", "presentation"]
+      }
+    },
+    "remoteProfile": {
+      "type": "object",
+      "required": ["remoteUrls", "refreshSeconds"],
+      "propertyNames": {
+        "enum": ["remoteUrls", "queries", "provider", "resource", "auth", "account",
+          "repository", "repositories", "hostname", "organization", "project", "host",
+          "query", "queryId", "bugIds", "workItemTypes", "include", "status", "creator",
+          "reviewer", "filter", "refreshSeconds", "limit", "presentation"]
+      },
+      "properties": {
+        "remoteUrls": {
+          "type": "array", "minItems": 1, "maxItems": 20, "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 8192 }
+        },
+        "refreshSeconds": { "$ref": "#/definitions/refreshSeconds" },
+        "queries": {
+          "type": "object", "minProperties": 1, "maxProperties": 100,
+          "additionalProperties": false,
+          "patternProperties": {
+            "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$": { "$ref": "#/definitions/templateQuery" }
+          }
+        }
+      },
+      "oneOf": [
+        {
+          "required": ["queries"],
+          "propertyNames": { "enum": ["remoteUrls", "refreshSeconds", "queries", "presentation"] }
+        },
+        { "required": ["provider", "resource"], "not": { "required": ["queries"] } }
       ]
     },
     "query": {

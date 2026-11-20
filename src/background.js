@@ -65,7 +65,7 @@ export async function scheduleRefresh({ cachePath, paths, name, queryName, finge
     try {
       checkLock();
       await writeJson(jobPath, { id, pid: child.pid, fingerprint, force, state: 'running', startedAt: new Date().toISOString() });
-      child.send({ id, jobPath, home: paths.home, config: paths.config, name, queryName, fingerprint, force });
+      child.send({ id, jobPath, home: paths.home, config: paths.configs ?? paths.config, name, queryName, fingerprint, force });
       await ready;
       if (child.connected) child.disconnect();
       child.unref();

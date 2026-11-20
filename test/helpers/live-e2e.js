@@ -133,7 +133,7 @@ function decodeResult(stdout, stderr) {
 
 export async function liveCli(args, env) {
   try {
-    const { stdout, stderr } = await execute(process.execPath, [bin, ...args], {
+    const { stdout, stderr } = await execute(process.execPath, [bin, ...args, '--format', 'json'], {
       env, shell: false, windowsHide: true, timeout: 30 * 60 * 1000, maxBuffer: 32 * 1024 * 1024,
     });
     return decodeResult(stdout, stderr);

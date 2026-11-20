@@ -18,17 +18,25 @@ const bugEmoji = defaultPresentation.ansi.glyphs.bugs;
 const icons = defaultPresentation.ansi.glyphs;
 const providers = { github: 'GitHub', ado: 'Azure DevOps', chromium: 'Chromium' };
 const resources = { bugs: ['bug', 'bugs'], prs: ['pull request', 'pull requests'], cls: ['change', 'changes'] };
+function borderInk(border, style, settings, part) {
+  const source = border.colorSource === 'header' ? settings.table.header : style;
+  const color = border.colors?.[part]
+    ?? border.colors?.[{ lastLeft: 'left', lastRight: 'right' }[part]]
+    ?? border.foreground ?? (source.background || source.foreground);
+  return `\x1b[0;${border.background ? `48;2;${ansiColor(border.background, settings.palette)};` : ''}38;2;${ansiColor(color, settings.palette)}m`;
+}
+
 function band(value, style, settings, edge = 'middle') {
   const border = ansiBorder(settings);
-  const color = border.foreground ?? (border.colorSource === 'header' ? settings.table.header : style).background;
-  const cap = `\x1b[0;38;2;${ansiColor(color, settings.palette)}m`;
   const content = `\x1b[0;${ansiStyle(style, settings.palette)}m${value}`;
-  if (!settings.table.caps) return `${content}\x1b[0m`;
-  const left = edge === 'top' ? border.titleLeft : edge === 'bottom' ? border.lastLeft : border.left;
-  const right = edge === 'top' ? border.titleRight : edge === 'bottom' ? border.lastRight : border.right;
+  if (!settings.table.caps || (!border.enabled && edge !== 'top')) return `${content}\x1b[0m`;
+  const leftPart = edge === 'top' ? 'titleLeft' : edge === 'bottom' ? 'lastLeft' : 'left';
+  const rightPart = edge === 'top' ? 'titleRight' : edge === 'bottom' ? 'lastRight' : 'right';
+  const left = border[leftPart], right = border[rightPart];
   const slots = borderWidths(border);
-  const start = border.filledSides && left === ' ' ? `\x1b[0;${ansiStyle(style, settings.palette)}m ${value}` : cap + left.padStart(slots.left) + content;
-  const end = border.filledSides && right === ' ' ? ' ' : cap + right.padEnd(slots.right);
+  const start = border.filledSides && left === ' ' ? `\x1b[0;${ansiStyle(style, settings.palette)}m ${value}`
+    : borderInk(border, style, settings, leftPart) + left.padStart(slots.left) + content;
+  const end = border.filledSides && right === ' ' ? ' ' : borderInk(border, style, settings, rightPart) + right.padEnd(slots.right);
   return `${start}${end}\x1b[0m`;
 }
 
@@ -146,6 +154,7 @@ function tableRow(item, year) {
   return {
     item: `#${item.id}`, icon, kind: item.kind,
     title: clean(item.title),
+    state: clean(item.state),
     status: `${item.draft ? 'Draft / ' : ''}${friendlyState(item.state)}`,
     person: clean((item.kind === 'bug' ? item.assignees.join(', ') : item.author) || '-'),
     repository: clean(item.repository ?? '-'),
@@ -224,20 +233,34 @@ function updateAge(section, now) {
 
 function consoleTable(columns, rows, ansi, width, panel, settings) {
   columns = [...columns];
+  const labels = ansi ? new Map(Object.entries(settings.table.status.labels).map(([state, label]) => [state.toLowerCase(), label])) : null;
   rows = rows.map(row => {
+    if (!Object.hasOwn(row, 'item')) return row;
     const icon = ansi ? row.kind === 'bug'
       ? settings.glyphs.bugs[Number(BigInt(row.item.slice(1)) % BigInt(settings.glyphs.bugs.length))]
       : settings.glyphs[row.kind] : '';
-    return { ...row, item: ansi && settings.icons ? `${icon} ${row.item}` : row.item };
+    const state = ansi ? labels.get(row.state.toLowerCase()) ?? friendlyState(row.state) : row.status;
+    let status = ansi && row.tone === 'draft' ? labels.get('draft') ?? `Draft / ${state}` : state;
+    const customLabel = ansi && (row.tone === 'draft' ? labels.has('draft') || labels.has(row.state.toLowerCase())
+      : labels.has(row.state.toLowerCase()));
+    if (ansi && !customLabel && settings.table.status.labelStyle !== 'text') {
+      const emoji = row.tone === 'draft' ? '\u{1f4dd}' : row.state.toLowerCase() === 'merged' ? '\u{1f7e3}'
+        : row.tone === 'closed' ? '\u2705' : '\u{1f513}';
+      status = settings.table.status.labelStyle === 'emoji' ? emoji : `${emoji} ${status}`;
+    }
+    return { ...row, status, item: ansi && settings.icons ? `${icon} ${row.item}` : row.item };
   });
   const table = settings.table;
   const border = ansi ? ansiBorder(settings) : null;
-  const sides = ansi && table.caps ? borderWidths(border) : { left: 0, right: 0 };
+  const sides = ansi && table.caps && border.enabled ? borderWidths(border) : { left: 0, right: 0 };
+  const titleSides = ansi && table.caps ? borderWidths(border) : { left: 0, right: 0 };
   let padding = ansi ? table.padding : 0;
   let gapSize = ansi ? table.gap : 0;
   const gap = () => ansi ? ' '.repeat(Math.floor(gapSize / 2)) + table.separator + ' '.repeat(Math.ceil(gapSize / 2)) : table.separator;
   const overhead = () => (columns.length - 1) * displayWidth(gap()) + padding * 2 + sides.left + sides.right;
-  const minimum = column => ansi ? Math.min(3, column.label.length) : column.label.length;
+  const statusWidth = column => ansi && table.status.pills && column.key === 'status'
+    ? displayWidth(table.status.left) + table.status.padding * 2 + displayWidth(table.status.right) : 0;
+  const minimum = column => (ansi ? Math.min(3, column.label.length) : column.label.length) + statusWidth(column);
   const minimumWidth = () => columns.reduce((sum, column) => sum + minimum(column), 0) + overhead();
   for (const key of ['updated', 'repository', 'severity', 'priority', 'person']) {
     if (minimumWidth() + 10 <= width) break;
@@ -248,7 +271,7 @@ function consoleTable(columns, rows, ansi, width, panel, settings) {
     else padding--;
   }
   const widths = columns.map(column => Math.max(minimum(column),
-    Math.min(column.max, Math.max(...rows.map(row => displayWidth(row[column.key]))))));
+    Math.min(column.max, Math.max(...rows.map(row => displayWidth(row[column.key])))) + statusWidth(column)));
   const total = () => widths.reduce((sum, size) => sum + size, 0) + overhead();
   while (total() > width) {
     let largest = -1;
@@ -259,21 +282,51 @@ function consoleTable(columns, rows, ansi, width, panel, settings) {
     widths[largest]--;
   }
   const edges = padding * 2 + sides.left + sides.right;
-  const panelLabels = ansi ? [panel.panelTitle, ...panel.notices, ...(!rows.length ? [panel.message] : [])] : [];
-  const panelWidth = ansi ? Math.min(width, Math.max(total(), ...panelLabels.map(label => displayWidth(label) + edges))) : total();
+  const titleEdges = padding * 2 + titleSides.left + titleSides.right;
+  const panelLabels = ansi ? [...panel.notices, ...(!rows.length ? [panel.message] : [])] : [];
+  const titleCaps = ansi && table.caps ? displayWidth(border.titleLeft) + displayWidth(border.titleRight) : 0;
+  const titleBudget = !ansi ? 0 : table.title.width === 'full' ? displayWidth(panel.panelTitle) + titleEdges
+    : table.title.inset + (table.caps && border.enabled && border.top ? 2 : 0)
+      + (table.title.width === 'content' ? displayWidth(panel.panelTitle) + padding * 2 + titleCaps
+        : Math.max(table.title.width, padding * 2 + titleCaps + 1));
+  const panelWidth = ansi ? Math.min(width, Math.max(total(), titleBudget,
+    ...panelLabels.map(label => displayWidth(label) + edges))) : total();
   const innerWidth = panelWidth - edges;
   const lines = [];
   const inset = ' '.repeat(padding);
-  const rule = (definition, style) => {
-    const color = border.foreground ?? (border.colorSource === 'header' ? table.header : style).background;
-    return `\x1b[0;38;2;${ansiColor(color, settings.palette)}m${definition.left}${definition.fill.repeat(panelWidth - 2)}${definition.right}\x1b[0m`;
-  };
+  const rule = (definition, style, part) => borderInk(border, style, settings, part)
+    + definition.left + definition.fill.repeat(panelWidth - 2) + definition.right + '\x1b[0m';
+  const titleLink = label => settings.links && panel.url ? `\x1b]8;;${panel.url}\x1b\\${label}\x1b]8;;\x1b\\` : label;
   if (ansi) {
-    if (table.caps && border.top) lines.push(rule(border.top, table.header));
-    for (const [index, label] of wrapCell(panel.panelTitle, innerWidth).entries()) {
-      const linked = settings.links && panel.url ? `\x1b]8;;${panel.url}\x1b\\${label}\x1b]8;;\x1b\\` : label;
-      lines.push(band(`${inset}${linked}${' '.repeat(innerWidth - displayWidth(label))}${inset}`,
-        table.header, settings, index === 0 ? 'top' : 'middle'));
+    if (table.title.width === 'full') {
+      if (table.caps && border.enabled && border.top) lines.push(rule(border.top, table.header, 'top'));
+      for (const [index, label] of wrapCell(panel.panelTitle, panelWidth - Math.max(edges, titleEdges)).entries()) {
+        const available = panelWidth - (index === 0 ? titleEdges : edges);
+        lines.push(band(`${inset}${titleLink(label)}${' '.repeat(available - displayWidth(label))}${inset}`,
+          table.header, settings, index === 0 ? 'top' : 'middle'));
+      }
+    } else {
+      const top = table.caps && border.enabled ? border.top : false;
+      const left = table.caps ? border.titleLeft : '', right = table.caps ? border.titleRight : '';
+      const prefixWidth = (top ? 1 : 0) + table.title.inset;
+      const suffixWidth = top ? 1 : 0;
+      const capsWidth = displayWidth(left) + displayWidth(right);
+      const available = panelWidth - prefixWidth - suffixWidth;
+      const desired = table.title.width === 'content' ? displayWidth(panel.panelTitle) + padding * 2 + capsWidth : table.title.width;
+      const titleWidth = Math.min(available, Math.max(desired, padding * 2 + capsWidth + 1));
+      const labelWidth = titleWidth - padding * 2 - capsWidth;
+      for (const [index, label] of wrapCell(panel.panelTitle, labelWidth).entries()) {
+        const prefix = top ? (index ? border.left || ' ' : top.left)
+          + (index ? ' ' : top.fill).repeat(table.title.inset) : ' '.repeat(prefixWidth);
+        const remaining = panelWidth - prefixWidth - titleWidth - suffixWidth;
+        const suffix = top ? (index ? ' ' : top.fill).repeat(remaining) + (index ? border.right || ' ' : top.right)
+          : ' '.repeat(remaining);
+        lines.push(borderInk(border, table.header, settings, index ? 'left' : 'top') + prefix
+          + borderInk(border, table.header, settings, 'titleLeft') + left
+          + `\x1b[0;${ansiStyle(table.header, settings.palette)}m${inset}${titleLink(label)}${' '.repeat(labelWidth - displayWidth(label))}${inset}`
+          + borderInk(border, table.header, settings, 'titleRight') + right
+          + borderInk(border, table.header, settings, index ? 'right' : 'top') + suffix + '\x1b[0m');
+      }
     }
     for (const notice of panel.notices) {
       for (const label of wrapCell(`${settings.icons ? `${settings.glyphs.warning} ` : ''}${notice}`, innerWidth)) {
@@ -295,7 +348,7 @@ function consoleTable(columns, rows, ansi, width, panel, settings) {
   }
   for (const [rowIndex, row] of rows.entries()) {
     const rowStyle = ansi ? table.rows[rowIndex % table.rows.length] : null;
-    const cells = columns.map((column, index) => wrapCell(row[column.key], widths[index]));
+    const cells = columns.map((column, index) => wrapCell(row[column.key], widths[index] - statusWidth(column)));
     const height = Math.max(...cells.map(cell => cell.length));
     for (let line = 0; line < height; line++) {
       const content = columns.map((column, index) => {
@@ -306,11 +359,24 @@ function consoleTable(columns, rows, ansi, width, panel, settings) {
           ...rowStyle, ...(column.key === 'status' ? table.states[row.tone] : {}),
           ...table.columns[column.key], ...(value === '-' ? table.missing : {}),
         };
-        const background = ansiColor(cellStyle.background, settings.palette) !== ansiColor(rowStyle.background, settings.palette);
+        const rowBackground = rowStyle.background === false ? '49' : `48;2;${ansiColor(rowStyle.background, settings.palette)}`;
+        if (table.status.pills && column.key === 'status') {
+          if (!value) return `\x1b[${ansiStyle(rowStyle, settings.palette)}m${' '.repeat(widths[index])}`;
+          const fill = ansiColor(table.status.background ?? cellStyle.foreground, settings.palette);
+          const cap = `\x1b[0;38;2;${fill}m`;
+          const pillInset = ' '.repeat(table.status.padding);
+          return cap + table.status.left
+            + `\x1b[0;48;2;${fill};38;2;${ansiColor(table.status.foreground, settings.palette)};${cellStyle.bold ? '1' : '22'}m${pillInset}${value}${pillInset}`
+            + cap + table.status.right + `\x1b[0;${ansiStyle(rowStyle, settings.palette)}m`
+            + ' '.repeat(widths[index] - displayWidth(value) - statusWidth(column));
+        }
+        const background = cellStyle.background !== rowStyle.background &&
+          (cellStyle.background === false || rowStyle.background === false ||
+            ansiColor(cellStyle.background, settings.palette) !== ansiColor(rowStyle.background, settings.palette));
         const style = `\x1b[${ansiStyle(cellStyle, settings.palette, background)}m`;
         const label = settings.links && column.key === 'item' && value
           ? `\x1b]8;;${row.url}\x1b\\${value}\x1b]8;;\x1b\\` : value;
-        return style + label + padding + (background ? `\x1b[48;2;${ansiColor(rowStyle.background, settings.palette)}m` : '');
+        return style + label + padding + (background ? `\x1b[${rowBackground}m` : '');
       }).join(ansi && table.separator ? `\x1b[${ansiStyle(rowStyle, settings.palette, false)}m${gap()}` : gap());
       // Only reset at the line boundary so cell colors cannot punch holes in the row band.
       lines.push(ansi ? band(
@@ -318,10 +384,10 @@ function consoleTable(columns, rows, ansi, width, panel, settings) {
         rowStyle, settings, rowIndex === rows.length - 1 && line === height - 1 ? 'bottom' : 'middle') : content);
     }
   }
-  if (ansi && table.caps && border.bottom) {
+  if (ansi && table.caps && border.enabled && border.bottom) {
     const lastStyle = rows.length ? table.rows[(rows.length - 1) % table.rows.length]
       : { ...table.rows[0], ...(panel.error ? table.error : {}) };
-    lines.push(rule(border.bottom, lastStyle));
+    lines.push(rule(border.bottom, lastStyle, 'bottom'));
   }
   return lines;
 }
@@ -356,10 +422,47 @@ export function buildTableModels(document, { now = new Date() } = {}) {
 export function formatResults(document, format, {
   columns = 100, now = new Date(), presentation, presentationFor,
 } = {}) {
+  return formatModels(buildTableModels(document, { now }), format, { columns, presentation, presentationFor });
+}
+
+/** Render non-query command documents without weakening query-result validation. */
+export function formatDocument(document, format, { title = 'DevDash', ...options } = {}) {
+  const groups = [];
+  function model(value, label) {
+    const rows = [];
+    function visit(entry, path) {
+      const children = entry !== null && typeof entry === 'object' ? Object.entries(entry) : [];
+      if (children.length) {
+        for (const [key, child] of children) visit(child, path ? `${path}.${key}` : key);
+      } else {
+        rows.push({ field: clean(path || 'Value'),
+          value: clean(typeof entry === 'string' && entry ? entry : JSON.stringify(entry) ?? 'undefined') });
+      }
+    }
+    visit(value, '');
+    groups.push({
+      title: clean(label), panelTitle: clean(label), columns: [
+        { key: 'field', label: 'Field', max: 60 }, { key: 'value', label: 'Value', max: 100 },
+      ], rows, notices: [], message: 'No entries.', error: false,
+    });
+  }
+  if (object(document)) {
+    const scalar = Object.entries(document).filter(([, value]) => value === null || typeof value !== 'object');
+    if (scalar.length) model(Object.fromEntries(scalar), title);
+    for (const [key, value] of Object.entries(document)) {
+      if (value !== null && typeof value === 'object') model(value, `${title} / ${key}`);
+    }
+    if (!groups.length) model(document, title);
+  } else model(document, title);
+  return formatModels(groups, format, options);
+}
+
+function formatModels(groups, format, {
+  columns = 100, presentation, presentationFor,
+} = {}) {
   if (!['markdown', 'ansi', 'text'].includes(format)) throw new Error('Unknown presentation format.');
   if (!Number.isInteger(columns) || columns < 1) throw new Error('Console width must be a positive integer.');
   const width = Math.max(24, Math.min(240, columns));
-  const groups = buildTableModels(document, { now });
   const base = resolvePresentation(presentation);
   const md = format === 'markdown';
   const ansi = format === 'ansi';
@@ -376,21 +479,21 @@ export function formatResults(document, format, {
       lines.push('', ...consoleTable(model.columns, model.rows, true, width, model, settings));
       continue;
     }
-    lines.push('', md ? `${'#'.repeat(settings.headingLevel)} ${text(model.title)}` : model.title);
+    lines.push('', md ? `${'#'.repeat(settings.headingLevel)} ${text(model.title)}` : text(model.title));
     if (model.scope) lines.push(text(model.scope));
     if (model.error) {
       lines.push(text(model.message));
       continue;
     }
-    lines.push(text(model.summary));
+    if (model.summary) lines.push(text(model.summary));
     if (!model.rows.length) {
       lines.push('', model.message);
       continue;
     }
     lines.push('', ...(md ? markdownTable(model.columns, model.rows, settings)
       : consoleTable(model.columns, model.rows, false, width, model, settings)));
-    if (!md && settings.links) {
-      lines.push('', 'Links:', ...model.rows.map(row => `  ${row.item} ${row.url}`));
+    if (!md && settings.links && model.rows.some(row => row.url)) {
+      lines.push('', 'Links:', ...model.rows.filter(row => row.url).map(row => `  ${row.item} ${row.url}`));
     }
   }
   return { output: lines.join('\n') + '\n', failed };

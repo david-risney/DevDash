@@ -73,7 +73,7 @@ export function launcherOptions(args) {
   for (let index = 0; index < args.length; index++) {
     const argument = args[index];
     if (/^chrome-extension:\/\/[a-p]{32}\/$/.test(argument) || /^--parent-window=\d+$/.test(argument)) continue;
-    if (!['--home', '--config', '--launch-config'].includes(argument) || seen.has(argument)) {
+    if (!['--home', '--config', '--launch-config'].includes(argument) || (argument !== '--config' && seen.has(argument))) {
       throw new Error(`Unsupported native launcher argument: ${argument}`);
     }
     seen.add(argument);
@@ -83,12 +83,18 @@ export function launcherOptions(args) {
       const saved = JSON.parse(readFileSync(value, 'utf8').replace(/^\uFEFF/, ''));
       if (!saved || typeof saved !== 'object' || Array.isArray(saved)
           || Object.keys(saved).some(key => !['home', 'config'].includes(key))
-          || Object.values(saved).some(path => typeof path !== 'string' || !path)) {
+          || (saved.home !== undefined && (typeof saved.home !== 'string' || !saved.home))
+          || (saved.config !== undefined && (Array.isArray(saved.config)
+            ? !saved.config.length || saved.config.some(source => typeof source !== 'string' || !source)
+            : typeof saved.config !== 'string' || !saved.config))) {
         throw new Error('Invalid native launcher configuration.');
       }
-      Object.assign(options, saved);
+      if (saved.home !== undefined) options.home = saved.home;
+      if (saved.config !== undefined) options.config = options.config === undefined ? saved.config
+        : [options.config].flat().concat(saved.config);
     } else {
-      options[argument.slice(2)] = value;
+      const key = argument.slice(2);
+      options[key] = key === 'config' && options.config !== undefined ? [options.config].flat().concat(value) : value;
     }
   }
   return options;

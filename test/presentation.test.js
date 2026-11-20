@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ansiBorder, loadPresentation, resolvePresentation, defaultPresentation } from '../src/presentation.js';
+import { ansiBorder, loadPresentation, resolvePresentation, defaultPresentation, presentationThemes } from '../src/presentation.js';
 import { displayWidth } from '../src/terminal-width.js';
-import { buildTableModels, formatResults } from '../src/format.js';
+import { buildTableModels, formatDocument, formatResults } from '../src/format.js';
 import { validateConfig, paths } from '../src/config.js';
 import { providerProfile } from '../src/query.js';
 import { testItem } from './helpers/test-provider.js';
@@ -30,7 +30,7 @@ test('presentation merges objects deeply, replaces row arrays and never mutates 
   const defaults = structuredClone(defaultPresentation);
   const styles = resolvePresentation(...layers);
   assert.equal(styles.ansi.table.header.foreground, 'p:custom');
-  assert.equal(styles.ansi.table.header.background, 'p:header');
+  assert.equal(styles.ansi.table.header.background, 'p:accent');
   assert.equal(styles.ansi.table.header.bold, false);
   assert.equal(styles.ansi.table.rows.length, 1);
   assert.deepEqual(styles.ansi.table.rows[0], { background: '#112233', foreground: 'p:text', bold: false });
@@ -45,6 +45,7 @@ test('presentation merges objects deeply, replaces row arrays and never mutates 
 test('user, file, group and query styles cascade independently, including flat profiles and palette inheritance', async t => {
   const resolvedPaths = await fixture(t);
   await writeFile(resolvedPaths.userConfig, JSON.stringify(userDocument({
+    theme: 'half-block',
     ansi: { palette: { userAccent: '#aabbcc' }, table: { header: { foreground: 'p:userAccent', background: '#111111' } } },
     md: { headingLevel: 3 },
   })));
@@ -155,10 +156,12 @@ test('one format-neutral model supplies all renderers with identical row data, d
 
 test('ANSI named styles apply to header, row stripes, states and columns without leaking column backgrounds into gaps', () => {
   const presentation = {
+    theme: 'half-block',
     ansi: {
       icons: false,
       palette: { customHeader: '#112233', first: '#223344', second: '#334455', cell: '#445566', ink: '#ddeeff' },
       table: {
+        status: { pills: false },
         header: { background: 'p:customHeader', foreground: 'p:ink', bold: false },
         rows: [{ background: 'p:first' }, { background: 'p:second' }],
         columns: { title: { background: 'p:cell', foreground: 'p:ink', bold: true } },
@@ -188,8 +191,8 @@ test('semicircle corner styling retains Powerline caps as an explicit font-compa
   const document = snapshot({ stale: true, items: [
     testItem({ title: 'A title that wraps over several narrow lines' }), testItem({ id: '2' }),
   ] });
-  const presentation = { ansi: { table: { cornerStyle: 'semicircle' } } };
-  assert.equal(resolvePresentation().ansi.table.cornerStyle, 'half');
+  const presentation = { theme: 'half-block', ansi: { table: { cornerStyle: 'semicircle' } } };
+  assert.equal(resolvePresentation().ansi.table.cornerStyle, 'rounded');
   assert.equal(resolvePresentation(presentation).ansi.table.cornerStyle, 'semicircle');
   const output = formatResults(document, 'ansi', { presentation, columns: 24 }).output;
   const lines = output.trimEnd().split('\n').filter(line => line.includes('48;2;'));
@@ -203,7 +206,7 @@ test('semicircle corner styling retains Powerline caps as an explicit font-compa
 });
 
 test('quarter styling retains one top and bottom pair with straight sides on wrapped panels', () => {
-  const presentation = { ansi: { table: { cornerStyle: 'quarter' } } };
+  const presentation = { theme: 'half-block', ansi: { table: { cornerStyle: 'quarter' } } };
   for (const document of [
     snapshot({ stale: true, profile: 'A very long profile name that wraps', items: [
       testItem({ title: 'A very long item title that wraps across lines' }),
@@ -223,7 +226,7 @@ test('quarter styling retains one top and bottom pair with straight sides on wra
 
 test('format-specific styling changes presentation without changing row data, safety or warnings', () => {
   const presentation = {
-    ansi: { icons: false, links: false, table: { caps: false } },
+    ansi: { icons: false, links: false, table: { caps: false, status: { pills: false } } },
     ascii: { links: false, table: { separator: ' / ', junction: '-/-' } },
     md: { links: false, headingLevel: 4, table: { align: { title: 'left', status: 'center', item: 'right' } } },
   };
@@ -246,9 +249,287 @@ test('format-specific styling changes presentation without changing row data, sa
 
 const stripTerminal = value => value.replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, '').replace(/\x1b\[[\d;]*m/g, '');
 
+function terminalCells(output) {
+  const cells = [];
+  let background = null, foreground = null;
+  for (const token of output.split(/(\x1b\]8;;[^\x1b]*\x1b\\|\x1b\[[\d;]*m)/)) {
+    if (token.startsWith('\x1b]')) continue;
+    if (!token.startsWith('\x1b[')) {
+      for (const glyph of token) cells.push({ glyph, background, foreground });
+      continue;
+    }
+    const codes = token.slice(2, -1).split(';').map(Number);
+    for (let i = 0; i < codes.length; i++) {
+      if (codes[i] === 0) { background = null; foreground = null; }
+      if (codes[i] === 49) background = null;
+      if ([38, 48].includes(codes[i]) && codes[i + 1] === 2) {
+        const color = codes.slice(i + 2, i + 5).join(';');
+        if (codes[i] === 48) background = color;
+        else foreground = color;
+        i += 4;
+      }
+    }
+  }
+  return cells;
+}
+
+test('all six built-in themes keep every border cell on the terminal default background', () => {
+  const documents = [
+    snapshot({ truncated: true, profile: 'Long synthetic project title that wraps', items: [
+      testItem({ title: 'Wrapped synthetic content with CJK \u754c and combining e\u0301' }),
+      testItem({ id: '2', state: 'closed', title: 'Another synthetic row' }),
+    ] }),
+    snapshot({ items: [] }),
+    { profile: 'unavailable', error: { code: 'CLI_FAILED', message: 'A synthetic provider error that wraps.' } },
+  ];
+  const borders = /[\u2500\u2502\u256d\u256e\u256f\u2570\u2580\u258c\u2590\u2598\u259d\ue0b0\ue0b2\ue0b4\ue0b6]/u;
+  for (const theme of Object.keys(presentationThemes)) for (const columns of [24, 40, 100]) {
+    for (const document of documents) {
+      const before = structuredClone(document);
+      const output = formatResults(document, 'ansi', { presentation: { theme }, columns }).output;
+      const lines = stripTerminal(output).trimEnd().split('\n').slice(2);
+      assert.ok(lines.length >= 2);
+      assert.ok(lines.every(line => displayWidth(line) === displayWidth(lines[0]) && displayWidth(line) <= columns),
+        `${theme} must keep wrapped rows, titles, notices and rules aligned at ${columns} cells`);
+      const borderCells = terminalCells(output).filter(cell => borders.test(cell.glyph));
+      assert.ok(borderCells.length >= 3);
+      assert.ok(borderCells.every(cell => cell.background === null), `${theme}: no border inherits a row/title background`);
+      assert.deepEqual(document, before);
+      for (const format of ['text', 'markdown']) {
+        assert.equal(formatResults(document, format, { presentation: { theme } }).output,
+          formatResults(document, format).output);
+      }
+    }
+  }
+});
+
+test('themes have distinct status treatments while semicircle-tab retains rounded text pills', () => {
+  const document = snapshot({ items: [testItem(), testItem({ id: '2', state: 'closed' }), testItem({ id: '3', draft: true })] });
+  const defaultOutput = formatResults(document, 'ansi').output;
+  assert.equal(defaultOutput, formatResults(document, 'ansi', { presentation: { theme: 'semicircle-tab' } }).output);
+  assert.ok(stripTerminal(defaultOutput).split('\n')[2].startsWith('\u256d\u2500\ue0b6'));
+  for (const [theme, pills, labels] of [
+    ['half-block', false, ['Open', 'Closed', 'Draft / Open']],
+    ['chevron', false, ['Open', 'Closed', 'Draft / Open']],
+    ['semicircle', true, ['\u{1f513} Open', '\u2705 Closed', '\u{1f4dd} Draft / Open']],
+    ['rounded-pills', true, ['\u{1f513} Open', '\u2705 Closed', '\u{1f4dd} Draft / Open']],
+    ['chevron-tab', false, ['\u{1f513}', '\u2705', '\u{1f4dd}']],
+    ['semicircle-tab', true, ['Open', 'Closed', 'Draft / Open']],
+  ]) {
+    // Exercise both raw layers and already-resolved settings, as used by CLI previews.
+    const presentation = resolvePresentation(resolvePresentation({ theme: 'semicircle' }), { theme });
+    const output = formatResults(document, 'ansi', { presentation }).output;
+    for (const label of labels) assert.ok(output.includes(label), `${theme}: ${label}`);
+    for (const color of ['140;200;255', '166;227;161', '249;211;128']) {
+      assert.equal(output.includes(`\x1b[0;48;2;${color};`), pills, theme);
+    }
+    if (theme === 'chevron-tab') assert.doesNotMatch(stripTerminal(output), /\b(?:Open|Closed|Draft)\b/u);
+    if (pills) assert.match(output, /\ue0b6\x1b\[0;48;2;/u);
+    else assert.match(output, /\x1b\[38;2;140;200;255;22m/u);
+    for (const format of ['text', 'markdown']) assert.equal(formatResults(document, format, { presentation }).output,
+      formatResults(document, format).output);
+  }
+});
+
+test('case-insensitive state labels support emoji, draft precedence and wrapping without changing source or other formats', () => {
+  const document = snapshot({ items: [
+    testItem({ state: 'OPEN', title: 'One' }), testItem({ id: '2', state: 'closed', title: 'Two' }),
+    testItem({ id: '3', state: 'merged', title: 'Three' }), testItem({ id: '4', state: 'IN_PROGRESS', title: 'Four' }),
+    testItem({ id: '5', state: 'waiting', title: 'Five' }), testItem({ id: '6', draft: true, title: 'Six' }),
+  ] });
+  const before = structuredClone(document);
+  const labels = { open: '\u{1f513}', CLOSED: '\u2705', merged: 'Merged!', in_progress: '\u{1f469}\u200d\u{1f4bb} Ready', draft: '\u{1f4dd}' };
+  for (const pills of [true, false]) for (const columns of [24, 40, 100]) {
+    const presentation = { ansi: { table: { status: { labels, pills } } } };
+    const output = formatResults(document, 'ansi', { presentation, columns }).output;
+    for (const label of ['\u{1f513}', '\u2705', '\u{1f469}\u200d\u{1f4bb}', '\u{1f4dd}']) assert.ok(output.includes(label));
+    assert.doesNotMatch(stripTerminal(output), /\b(?:Open|Closed|Draft)\b/u);
+    const lines = stripTerminal(output.trimEnd()).split('\n').slice(2);
+    assert.ok(lines.every(line => displayWidth(line) === displayWidth(lines[0]) && displayWidth(line) <= columns));
+    if (columns === 100) for (const label of ['Merged!', 'Waiting', 'Ready']) assert.ok(output.includes(label));
+    for (const format of ['text', 'markdown']) {
+      assert.equal(formatResults(document, format, { presentation }).output, formatResults(document, format).output);
+    }
+  }
+  const fallback = formatResults(snapshot({ items: [testItem({ draft: true })] }), 'ansi', {
+    presentation: { ansi: { table: { status: { labels: { open: '\u{1f513}' } } } } },
+  }).output;
+  assert.ok(fallback.includes('Draft / \u{1f513}'));
+  const longLabel = 'Waiting for an exceptionally thorough review';
+  const wrapped = formatResults(snapshot({ items: [testItem({ title: 'One' })] }), 'ansi', { columns: 24,
+    presentation: { ansi: { table: { status: { labels: { open: longLabel } } } } },
+  }).output;
+  const pieces = [...wrapped.matchAll(/\x1b\[0;48;2;140;200;255;38;2;31;41;51;22m ([^\x1b]*)/gu)].map(match => match[1]);
+  assert.equal(pieces.join('').replaceAll(' ', ''), longLabel.replaceAll(' ', ''));
+  assert.deepEqual(document, before);
+});
+
+test('pill colors, caps, spacing and labels survive frame changes, with narrower label overrides', () => {
+  const user = { ansi: { table: {
+    status: { pills: true, background: '#123456', foreground: '#fedcba', left: '[', right: ']', padding: 0, labels: { OPEN: 'Pending' } },
+    states: { closed: { foreground: '#abcdef' } },
+  } } };
+  const before = structuredClone(user);
+  for (const theme of Object.keys(presentationThemes)) {
+    const presentation = resolvePresentation(resolvePresentation(user), { theme, ansi: { table: { status: { labels: { open: 'Ready' } } } } });
+    const output = formatResults(snapshot(), 'ansi', { presentation }).output;
+    assert.ok(output.includes('[\x1b[0;48;2;18;52;86;38;2;254;220;186;22mReady\x1b[0;38;2;18;52;86m]'));
+    const caps = terminalCells(output).filter(cell => ['[', ']'].includes(cell.glyph));
+    assert.equal(caps.length, 2);
+    assert.ok(caps.every(cell => cell.background === null && cell.foreground === '18;52;86'));
+    assert.equal(presentation.ansi.table.states.closed.foreground, '#abcdef');
+    const disabled = resolvePresentation({ ansi: { table: { status: { pills: false } } } }, { theme });
+    assert.equal(disabled.ansi.table.status.pills, false);
+    const text = resolvePresentation({ ansi: { table: { status: { labelStyle: 'text' } } } }, { theme });
+    assert.equal(text.ansi.table.status.labelStyle, 'text');
+  }
+  const square = formatResults(snapshot(), 'ansi', {
+    presentation: { ansi: { table: { status: { left: '', right: '', padding: 0 } } } },
+  }).output;
+  assert.match(square, /\x1b\[0;48;2;140;200;255;38;2;31;41;51;22mOpen\x1b\[0;38;2;140;200;255m\x1b\[0;/u);
+  assert.deepEqual(user, before);
+});
+
+test('emoji styles cover semantic provider states and exact custom labels override automatic decoration', () => {
+  const document = snapshot({ items: [
+    testItem({ state: 'NEW', title: 'One' }), testItem({ id: '2', state: 'completed', title: 'Two' }),
+    testItem({ id: '3', state: 'MERGED', title: 'Three' }), testItem({ id: '4', state: 'active', draft: true, title: 'Four' }),
+  ] });
+  const output = formatResults(document, 'ansi', { presentation: { theme: 'chevron-tab' } }).output;
+  for (const emoji of ['\u{1f513}', '\u2705', '\u{1f7e3}', '\u{1f4dd}']) assert.ok(output.includes(emoji));
+  assert.doesNotMatch(stripTerminal(output), /\b(?:New|Completed|Merged|Draft|Active)\b/u);
+  const custom = formatResults(document, 'ansi', { presentation: { theme: 'chevron-tab', ansi: { table: {
+    status: { labels: { new: 'Pending', draft: 'WIP' } },
+  } } } }).output;
+  assert.ok(custom.includes('Pending') && custom.includes('WIP'));
+  assert.ok(!custom.includes('\u{1f513}') && !custom.includes('\u{1f4dd}'));
+  assert.throws(() => resolvePresentation({ ansi: { table: { status: { labelStyle: 'invalid' } } } }),
+    { code: 'INVALID_PRESENTATION' });
+});
+
+test('unsafe and ambiguous labels or pill caps fail even when no border rules are drawn', () => {
+  for (const status of [
+    { background: 'p:missingSECRET' }, { left: '\u754c' }, { right: '\x1b[2J' }, { left: '\u200d' },
+    { labels: { open: '' } }, { labels: { open: ' ' } }, { labels: { open: '\x1b[2JSECRET' } },
+    { labels: { open: '\u202eSECRET' } }, { labels: { open: '\nSECRET' } }, { labels: { open: '\u0301' } },
+    { labels: { open: '\ud800' } }, { labels: { open: 'x'.repeat(129) } },
+    { labels: { Open: 'One', open: 'Two' } }, { labels: { ' open ': 'One' } }, { labels: { '': 'One' } },
+  ]) {
+    assert.throws(() => resolvePresentation({ ansi: { table: { status, border: { top: false, bottom: false } } } }),
+      error => error.code === 'INVALID_PRESENTATION' && !error.message.includes('SECRET'));
+  }
+  assert.equal(resolvePresentation({ ansi: { table: { status: { labels: { background: 'p:literal' } } } } })
+    .ansi.table.status.labels.background, 'p:literal');
+});
+
+test('full-width, content-width and numeric title tabs share panel widths while keeping their distinct geometry', () => {
+  const document = snapshot({ items: [testItem({ title: 'A sufficiently long synthetic title for a wide result panel' })] });
+  const rendered = presentation => stripTerminal(formatResults(document, 'ansi', {
+    presentation: resolvePresentation(presentation, { ansi: { table: { status: { pills: true, labelStyle: 'text' } } } }),
+  }).output)
+    .trimEnd().split('\n').slice(2);
+  const full = rendered({ theme: 'chevron' });
+  assert.ok(full[0].startsWith('\ue0b2') && full[0].endsWith('\ue0b0'));
+  assert.ok(full.slice(1, -1).every(line => line.startsWith('\u2502') && line.endsWith('\u2502')));
+  assert.match(full.at(-1), /^\u2570\u2500+\u256f$/u);
+  for (const [theme, left, right] of [
+    ['chevron-tab', '\ue0b2', '\ue0b0'], ['semicircle-tab', '\ue0b6', '\ue0b4'],
+  ]) {
+    const compact = rendered({ theme });
+    const fixed = rendered({ theme, ansi: { table: { title: { width: 20, inset: 3 } } } });
+    assert.ok(compact[0].startsWith('\u256d\u2500' + left));
+    assert.ok(compact[0].endsWith('\u2500\u256e'));
+    assert.ok(compact[0].indexOf(right) < displayWidth(compact[0]) - 5);
+    assert.equal(fixed[0].indexOf(right) - fixed[0].indexOf(left) + 1, 20);
+    assert.ok(fixed[0].startsWith('\u256d\u2500\u2500\u2500' + left));
+    assert.ok(fixed.every(line => displayWidth(line) === displayWidth(full[0])));
+  }
+  const pills = formatResults(document, 'ansi', { presentation: { theme: 'rounded-pills' } }).output;
+  assert.match(pills, /\ue0b6\x1b\[0;48;2;140;200;255;38;2;31;41;51;22m \u{1f513} Open \x1b\[0;38;2;140;200;255m\ue0b4/u);
+});
+
+test('theme changes reset inherited table geometry but retain palettes and independent query selections', async t => {
+  const resolvedPaths = await fixture(t);
+  await writeFile(resolvedPaths.userConfig, JSON.stringify(userDocument({
+    theme: 'chevron-tab', ansi: { palette: { accent: '#123456' } }, ascii: { links: false },
+  })));
+  const config = { version: 1, profiles: { work: {
+    refreshSeconds: 300, queries: {
+      bugs: { ...query, presentation: { theme: 'semicircle' } },
+      half: { ...query, presentation: { theme: 'half-block' } },
+      inherited: query,
+    },
+  } } };
+  validateConfig(config);
+  const options = await loadPresentation(resolvedPaths, config);
+  for (const [name, theme, shape] of [
+    ['bugs', 'semicircle', '\ue0b6'], ['half', 'half-block', '\u2590'], ['inherited', 'chevron-tab', '\u256d'],
+  ]) {
+    const settings = options.presentationFor({ profile: 'work', query: name });
+    assert.equal(settings.theme, theme);
+    assert.equal(settings.ansi.palette.accent, '#123456');
+    assert.equal(settings.ascii.links, false);
+    const output = formatResults(snapshot({ query: name }), 'ansi', options).output;
+    assert.ok(stripTerminal(output).split('\n')[2].startsWith(shape), name);
+  }
+  assert.equal(ansiBorder(options.presentationFor({ profile: 'work', query: 'half' }).ansi).top, undefined);
+});
+
+test('border visibility, individual edge colors and explicit backgrounds remain separately configurable', () => {
+  const document = snapshot({ items: [testItem(), testItem({ id: '2' })] });
+  const presentation = { theme: 'chevron-tab', ansi: { table: { border: {
+    left: '[', right: ']', foreground: '#123456', colors: { left: '#abcdef', right: '#fedcba', bottom: '#445566' },
+  } } } };
+  const output = formatResults(document, 'ansi', { presentation }).output;
+  const cells = terminalCells(output);
+  assert.ok(cells.filter(cell => cell.glyph === '[').every(cell => cell.foreground === '171;205;239' && cell.background === null));
+  assert.ok(cells.filter(cell => cell.glyph === ']').every(cell => cell.foreground === '254;220;186' && cell.background === null));
+  assert.match(output.trimEnd().split('\n').at(-1), /^\x1b\[0;38;2;68;85;102m/u);
+  const disabled = formatResults(document, 'ansi', { presentation: {
+    theme: 'chevron', ansi: { table: { border: { enabled: false } } },
+  } }).output;
+  assert.doesNotMatch(disabled, /[\u2500\u2502\u256d\u256e\u256f\u2570]/u);
+  assert.ok(disabled.includes('\ue0b2'), 'The title band is independent of the body border');
+  for (const line of stripTerminal(disabled.trimEnd()).split('\n').slice(2)) {
+    assert.equal(displayWidth(line), displayWidth(stripTerminal(disabled).split('\n')[2]));
+  }
+  const filled = terminalCells(formatResults(document, 'ansi', { presentation: {
+    theme: 'semicircle', ansi: { table: { border: { background: '#102030' } } },
+  } }).output).filter(cell => cell.glyph === '\u2502');
+  assert.ok(filled.length > 0 && filled.every(cell => cell.background === '16;32;48'));
+});
+
+test('background-free styles and configurable status caps retain narrow-width alignment and reject invalid theme settings', () => {
+  const document = snapshot({ items: [testItem({ state: 'a long custom state', title: 'Synthetic wrapped item' })] });
+  const presentation = { theme: 'rounded-pills', ansi: { table: {
+    padding: 3, title: { width: 8, inset: 6 },
+    header: { background: false }, rows: [{ background: false }],
+    columns: { title: { background: '#102030' } },
+    status: { left: '[', right: ']', foreground: '#ffffff', padding: 2 },
+  } } };
+  const output = formatResults(document, 'ansi', { presentation, columns: 24 }).output;
+  const lines = stripTerminal(output).trimEnd().split('\n').slice(2);
+  assert.ok(lines.every(line => displayWidth(line) === displayWidth(lines[0]) && displayWidth(line) <= 24));
+  assert.ok(output.includes('\x1b[49m'), 'Column backgrounds restore the default row background');
+  for (const width of ['content', 8, 20]) {
+    const metadata = formatDocument({ x: 'v' }, 'ansi', { title: 'X', columns: 24,
+      presentation: { theme: 'chevron-tab', ansi: { table: { title: { width, inset: 6 } } } } }).output;
+    const metadataLines = stripTerminal(metadata).trimEnd().split('\n').slice(2);
+    assert.ok(metadataLines.every(line => displayWidth(line) === displayWidth(metadataLines[0]) && displayWidth(line) <= 24));
+  }
+  for (const layer of [
+    { theme: 'missing' }, { ansi: { table: { title: { width: 0 } } } },
+    { ansi: { table: { title: { width: 'unknown', inset: 8 } } } },
+    { ansi: { table: { status: { left: '\u754c' } } } },
+    { ansi: { table: { border: { colors: { left: 'p:missing' } } } } },
+    { ansi: { table: { border: { background: 'p:missing' } } } },
+  ]) assert.throws(() => resolvePresentation(layer), { code: 'INVALID_PRESENTATION' });
+});
+
 test('geometry overrides apply after presets, deep-merge across scopes and do not materialize preset defaults', async t => {
   const resolvedPaths = await fixture(t);
   await writeFile(resolvedPaths.userConfig, JSON.stringify(userDocument({
+    theme: 'half-block',
     ansi: { table: { border: { left: 'L', bottom: { left: '+', fill: '-', right: '+' } }, padding: 2 } },
   })));
   const config = { version: 1, profiles: { work: {
@@ -264,14 +545,14 @@ test('geometry overrides apply after presets, deep-merge across scopes and do no
   assert.equal(ansiBorder(ansi).left, 'L');
   assert.equal(ansiBorder(ansi).right, 'R');
   assert.deepEqual(ansiBorder(ansi).bottom, { left: '+', fill: '-', right: '+' });
-  assert.throws(() => resolvePresentation({ ansi: { table: { border: { top: { fill: '-' } } } } }), { code: 'INVALID_PRESENTATION' });
+  assert.throws(() => resolvePresentation({ theme: 'half-block', ansi: { table: { border: { top: { fill: '-' } } } } }), { code: 'INVALID_PRESENTATION' });
   assert.equal(Object.hasOwn(ansi.table.border, 'titleLeft'), false);
-  const switched = resolvePresentation({ ansi: { table: { cornerStyle: 'quarter' } } });
+  const switched = resolvePresentation({ theme: 'half-block', ansi: { table: { cornerStyle: 'quarter' } } });
   assert.equal(ansiBorder(switched.ansi).titleLeft, '\u{1fbee}');
 });
 
 test('custom borders, rules, separators, spacing and icons render safely within narrow cell budgets', () => {
-  const presentation = { ansi: {
+  const presentation = { theme: 'half-block', ansi: {
     glyphs: { dashboard: 'D', warning: '!', pr: 'P', cl: 'C', bugs: ['x', '\u{1f41d}'] },
     table: {
       padding: 3, gap: 6, separator: '\u2502',
@@ -317,7 +598,7 @@ test('custom borders, rules, separators, spacing and icons render safely within 
 });
 
 test('pixel sides can repeat on every line with no horizontal rules, and borders can be disabled or asymmetric', () => {
-  const presentation = { ansi: { icons: false, table: {
+  const presentation = { theme: 'half-block', ansi: { icons: false, table: {
     padding: 0, gap: 0, separator: ' ',
     border: { left: '\ue0c7', right: '\ue0c6', top: false, bottom: false },
   } } };
@@ -330,7 +611,7 @@ test('pixel sides can repeat on every line with no horizontal rules, and borders
     ansi: { table: { caps: false, border: { top: { left: '+', fill: '-', right: '+' } } } },
   } }).output;
   assert.doesNotMatch(noBorders, /[\u2590\u258c\u2580]|[+]/);
-  const asymmetric = formatResults(document, 'ansi', { columns: 24, presentation: { ansi: { table: {
+  const asymmetric = formatResults(document, 'ansi', { columns: 24, presentation: { theme: 'half-block', ansi: { table: {
     border: { left: '', right: ']', bottom: false },
   } } } }).output;
   assert.ok(stripTerminal(asymmetric).trimEnd().split('\n').slice(2).every(line => line.endsWith(']') && displayWidth(line) <= 24));
@@ -343,7 +624,7 @@ test('unsafe, non-cell and overly wide geometry or icon values fail explicitly',
     { border: { bottom: { fill: '' } } }, { border: { top: {} } },
     { border: { titleLeft: '\u202e' } }, { border: { left: '\n' } },
     { separator: '\u200d' }, { separator: '\u00ad' }, { border: { left: '\ud800' } },
-  ]) assert.throws(() => resolvePresentation({ ansi: { table } }), { code: 'INVALID_PRESENTATION' });
+  ]) assert.throws(() => resolvePresentation({ theme: 'half-block', ansi: { table } }), { code: 'INVALID_PRESENTATION' });
   for (const glyphs of [
     { bugs: [] }, { bugs: ['\x1b'] }, { pr: 'abc' }, { warning: '\u200b' }, { dashboard: '' },
     { dashboard: '\u00ad' }, { warning: '\u2060' },
@@ -372,7 +653,7 @@ test('schemas and public examples cover user settings and all override levels', 
   const { presentationFor } = await loadPresentation(resolvedPaths, config);
   assert.equal(presentationFor({ profile: 'work', query: 'bugs' }).ansi.table.header.background, 'p:groupHeader');
   assert.equal(presentationFor({ profile: 'work', query: 'priority-bugs' }).ansi.table.header.background, 'p:queryHeader');
-  assert.equal(presentationFor({ profile: 'work', query: 'priority-bugs' }).ansi.table.header.foreground, 'p:accent');
+  assert.equal(presentationFor({ profile: 'work', query: 'priority-bugs' }).ansi.table.header.foreground, 'p:row');
   assert.equal(presentationFor({ profile: 'work', query: 'priority-bugs' }).ascii.links, false);
   assert.equal(presentationFor({ profile: 'work', query: 'bugs' }).ascii.links, true);
   assert.deepEqual(providerProfile({ ...query, presentation: header('#abcdef') }), query);
