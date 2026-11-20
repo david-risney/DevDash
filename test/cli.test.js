@@ -193,7 +193,7 @@ test('non-query CLI commands and projected pages support all formats without los
     [['logs', 'tail', '--lines', '1'], 'logs'],
     [['hello'], 'capabilities'],
     [['doctor', 'public'], 'checks'],
-    [['native-manifest', '--extension-id', 'a'.repeat(32), '--launcher', 'C:\\DevDash\\host.cmd'], 'origins'],
+    [['native-manifest', '--extension-id', 'a'.repeat(32), '--launcher', join(service.paths.home, 'host.cmd')], 'origins'],
     [['get', 'reviews', '--query', 'requested', '--cached-only', '--page-size', '1', '--fields', 'title'], 'Synthetic metadata output'],
     [['refresh', 'reviews', '--query', 'requested', '--background', '--due'], 'fresh'],
   ];
